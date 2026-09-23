@@ -4,11 +4,17 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from . import contracts
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def generate_record_id() -> str:
+    """Generate an opaque record identifier without shared mutable state."""
+    return str(uuid4())
 
 
 def load_records(data_file: str) -> List[Dict[str, Any]]:
@@ -58,6 +64,17 @@ def save_records(records: List[Dict[str, Any]], data_file: str) -> bool:
         LOGGER.error("Could not save data file %s: %s", path, error)
         return False
     return True
+
+
+def save_record_revision(record: Dict[str, Any], data_file: str) -> bool:
+    """Append one valid record revision to the JSON store."""
+    if contracts.validate_record_contract(record):
+        LOGGER.error("Refused to save a record that violates the frozen contract")
+        return False
+
+    records = load_records(data_file)
+    records.append(record)
+    return save_records(records, data_file)
 
 
 def filter_records(

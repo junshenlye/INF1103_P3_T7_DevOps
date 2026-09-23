@@ -90,7 +90,7 @@ def validate_record_contract(record: Dict[str, Any]) -> List[str]:
         errors.append("issues must be a list.")
     else:
         for index, issue in enumerate(issues):
-            errors.extend(_validate_issue(issue, index))
+            errors.extend(validate_issue_contract(issue, index))
 
     revision = record["revision"]
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -99,7 +99,7 @@ def validate_record_contract(record: Dict[str, Any]) -> List[str]:
     return errors
 
 
-def _validate_issue(issue: Any, index: int) -> List[str]:
+def validate_issue_contract(issue: Any, index: int = 0) -> List[str]:
     """Return schema errors for one issue entry."""
     label = f"issues[{index}]"
     if not isinstance(issue, dict):

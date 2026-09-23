@@ -117,7 +117,7 @@ use classes internally.
 Changing this contract requires an explicit review of affected modules and
 stored-data migration impact before implementation.
 
-## Run the procedural skeleton
+## Run the procedural application
 
 Requires Python 3.9 or newer.
 
@@ -130,6 +130,29 @@ python -m src.main
 
 The local `.env` file is intentionally excluded from Git. Add an OpenRouter API
 key there only when AI integration begins. Never commit or display that key.
+
+The MVP uses OpenRouter's free multimodal model:
+
+```text
+nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+```
+
+Process one assessment using prompt fields and an optional image:
+
+```sh
+python -m src.main \
+  --module UCS1001 \
+  --assessment-type "Reader Response Essay" \
+  --deadline 2026-10-15 \
+  --weightage 30 \
+  --prompt "Confirm the assessment details from the attached source." \
+  --image test_case/UCS1001.png
+```
+
+The free model does not enforce JSON output at the API level. The AI Manager
+therefore requests one JSON object, parses it, and validates every structured
+field before the Logic Manager can use it. Do not upload confidential material
+or images containing personal data to the free endpoint.
 
 ## Run tests
 
