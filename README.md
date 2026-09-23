@@ -154,12 +154,50 @@ therefore requests one JSON object, parses it, and validates every structured
 field before the Logic Manager can use it. Do not upload confidential material
 or images containing personal data to the free endpoint.
 
+## Process multiple deadlines
+
+Use a JSON batch when several assessments must form one schedule:
+
+```sh
+python -m src.main --batch-file examples/assessments.json
+```
+
+Each list item is processed through the AI Manager independently. One malformed
+item does not prevent valid items from being saved. The resulting schedule uses
+only the latest `READY` revision for each record ID and keeps incomplete,
+conflicting, constrained, or review-required records in persistence with a
+warning.
+
+The example intentionally contains three exact deadlines and one image whose
+deadline is only a teaching week, demonstrating a usable three-block partial
+schedule while preserving the incomplete record.
+
+Schedule blocks are derived rather than added to the frozen record contract.
+The current deliberately simple preparation rule is five days for `HIGH`, three
+days for `MEDIUM`, and two days for `LOW`. Overlapping blocks remain separate so
+a frontend can display them as competing workload.
+
+To revisit a saved record, supply its record ID and the corrected field. The
+previous revision remains in JSON and the corrected result is appended:
+
+```sh
+python -m src.main \
+  --record-id YOUR_RECORD_ID \
+  --deadline 2026-10-15 \
+  --prompt "The exact deadline is now available."
+```
+
+`AI_MAX_RETRIES` is treated as the maximum total number of attempts and is
+bounded to protect the free API quota. If all attempts fail, trusted input is
+saved as a recoverable problem record instead of being discarded.
+
 ## Run tests
 
 ```sh
 python -m pytest
 ```
 
-The initial suite checks the frozen contract, safe JSON loading, record
-filtering, CLI startup, absence of project-defined classes, and confinement of
-terminal output to the I/O Manager.
+The suite checks the frozen contract, multimodal request shape, bounded AI
+retries, missing information, source conflicts, partial schedules, revision
+history, corruption-safe persistence, CLI startup, absence of project-defined
+classes, and confinement of terminal output to the I/O Manager.

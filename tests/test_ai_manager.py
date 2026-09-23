@@ -156,3 +156,48 @@ def test_transport_error_does_not_leak_sensitive_exception_text(caplog):
     assert result["errors"] == ["AI response could not be processed."]
     assert "unit-test-key-not-real" not in caplog.text
     assert "unit-test-key-not-real" not in json.dumps(result)
+
+
+def test_malformed_responses_retry_until_third_attempt(monkeypatch):
+    monkeypatch.setenv("AI_MAX_RETRIES", "3")
+    responses = ["not json", "[]", json.dumps(valid_extraction())]
+
+    def eventually_valid_caller(**kwargs):
+        return responses.pop(0)
+
+    result = ai_manager.process_record(
+        {"module": "INF1103", "image_paths": []},
+        api_caller=eventually_valid_caller,
+    )
+
+    assert result["ok"] is True
+    assert result["attempts"] == 3
+    assert responses == []
+
+
+def test_retry_limit_is_bounded_and_reports_actual_attempts(monkeypatch):
+    monkeypatch.setenv("AI_MAX_RETRIES", "999")
+    calls = []
+
+    def malformed_caller(**kwargs):
+        calls.append(kwargs)
+        return "not json"
+
+    result = ai_manager.process_record(
+        {"module": "INF1103", "image_paths": []},
+        api_caller=malformed_caller,
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == ai_manager.MAX_ALLOWED_ATTEMPTS
+    assert len(calls) == ai_manager.MAX_ALLOWED_ATTEMPTS
+
+
+def test_missing_critical_field_requires_feedback_issue():
+    extraction = valid_extraction()
+    extraction["deadline"] = None
+    extraction["missing_fields"] = ["deadline"]
+
+    errors = ai_manager.validate_extraction(extraction)
+
+    assert "A feedback issue is required for missing deadline." in errors

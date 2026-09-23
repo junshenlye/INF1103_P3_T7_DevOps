@@ -27,15 +27,20 @@ def resolve_data_file_path(configured_path: Optional[str] = None) -> str:
     return str(path)
 
 
-def start_application(data_file: Optional[str] = None) -> Dict[str, Any]:
+def start_application(
+    data_file: Optional[str] = None,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
     """Load local configuration and existing records without starting a UI loop."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     resolved_data_file = resolve_data_file_path(data_file)
     records = data_manager.load_records(resolved_data_file)
+    latest = data_manager.latest_records(records)
     return {
         "records": records,
         "records_loaded": len(records),
         "data_file": resolved_data_file,
+        "schedule": logic_manager.build_schedule(latest, today=today),
     }
 
 
@@ -57,19 +62,56 @@ def process_assessment(
             "ai_attempts": 0,
         }
 
+    resolved_data_file = resolve_data_file_path(data_file)
+    existing_records = data_manager.load_records(resolved_data_file)
+    resolved_record_id = (
+        record_id
+        or input_record.get("record_id")
+        or data_manager.generate_record_id()
+    )
+    revision = data_manager.next_revision(existing_records, resolved_record_id)
     ai_result = ai_manager.process_record(input_record, api_caller=api_caller)
     if not ai_result["ok"]:
+        if ai_result["attempts"] == 0:
+            return {
+                "ok": False,
+                "record": None,
+                "errors": ai_result["errors"],
+                "ai_attempts": ai_result["attempts"],
+                "preserved": False,
+            }
+        recoverable_record = logic_manager.build_recoverable_record(
+            input_record,
+            processing_errors=ai_result["errors"],
+            record_id=resolved_record_id,
+            revision=revision,
+            today=today,
+        )
+        if not data_manager.save_record_revision(
+            recoverable_record,
+            resolved_data_file,
+        ):
+            return {
+                "ok": False,
+                "record": None,
+                "errors": ["AI failed and recoverable input could not be saved."],
+                "ai_attempts": ai_result["attempts"],
+                "preserved": False,
+            }
+        schedule = build_current_schedule(resolved_data_file, today=today)
         return {
             "ok": False,
-            "record": None,
+            "record": recoverable_record,
             "errors": ai_result["errors"],
             "ai_attempts": ai_result["attempts"],
+            "preserved": True,
+            "schedule": schedule,
         }
 
     final_record = logic_manager.apply_business_rules(
         ai_result["extraction"],
-        record_id=record_id or data_manager.generate_record_id(),
-        revision=1,
+        record_id=resolved_record_id,
+        revision=revision,
         today=today,
     )
     contract_errors = contracts.validate_record_contract(final_record)
@@ -82,7 +124,6 @@ def process_assessment(
             "ai_attempts": ai_result["attempts"],
         }
 
-    resolved_data_file = resolve_data_file_path(data_file)
     if not data_manager.save_record_revision(final_record, resolved_data_file):
         return {
             "ok": False,
@@ -91,11 +132,156 @@ def process_assessment(
             "ai_attempts": ai_result["attempts"],
         }
 
+    schedule = build_current_schedule(resolved_data_file, today=today)
     return {
         "ok": True,
         "record": final_record,
         "errors": [],
         "ai_attempts": ai_result["attempts"],
+        "preserved": False,
+        "schedule": schedule,
+    }
+
+
+def build_current_schedule(
+    data_file: str,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Build a schedule from only the latest persisted record revisions."""
+    records = data_manager.load_records(data_file)
+    latest = data_manager.latest_records(records)
+    return logic_manager.build_schedule(latest, today=today)
+
+
+def reprocess_assessment(
+    record_id: str,
+    updates: Dict[str, Any],
+    data_file: Optional[str] = None,
+    api_caller: Optional[Callable[..., str]] = None,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Merge updates into the latest saved input fields and append a revision."""
+    if not isinstance(updates, dict):
+        return {
+            "ok": False,
+            "record": None,
+            "errors": ["Assessment updates must be a JSON object."],
+            "ai_attempts": 0,
+            "preserved": False,
+        }
+    unexpected_fields = sorted(set(updates) - io_manager.ASSESSMENT_INPUT_FIELDS)
+    if unexpected_fields:
+        return {
+            "ok": False,
+            "record": None,
+            "errors": [
+                f"Unexpected input fields: {', '.join(unexpected_fields)}."
+            ],
+            "ai_attempts": 0,
+            "preserved": False,
+        }
+
+    resolved_data_file = resolve_data_file_path(data_file)
+    records = data_manager.load_records(resolved_data_file)
+    latest = data_manager.get_latest_record(records, record_id)
+    if latest is None:
+        return {
+            "ok": False,
+            "record": None,
+            "errors": [f"Record ID was not found: {record_id}"],
+            "ai_attempts": 0,
+            "preserved": False,
+        }
+
+    merged_input = {
+        "record_id": record_id,
+        "module": latest["module"],
+        "assessment_type": latest["assessment_type"],
+        "deadline": latest["deadline"],
+        "weightage": latest["weightage"],
+        "prompt": "",
+        "image_paths": [],
+    }
+    for field in io_manager.ASSESSMENT_INPUT_FIELDS - {"record_id"}:
+        if field in updates and updates[field] not in (None, "", []):
+            merged_input[field] = updates[field]
+    return process_assessment(
+        merged_input,
+        data_file=resolved_data_file,
+        api_caller=api_caller,
+        today=today,
+        record_id=record_id,
+    )
+
+
+def process_batch(
+    input_records: List[Any],
+    data_file: Optional[str] = None,
+    api_caller: Optional[Callable[..., str]] = None,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Process multiple isolated assessments and return one combined schedule."""
+    resolved_data_file = resolve_data_file_path(data_file)
+    if not isinstance(input_records, list) or not input_records:
+        return {
+            "ok": False,
+            "results": [],
+            "saved_count": 0,
+            "schedule": build_current_schedule(resolved_data_file, today=today),
+            "errors": ["Batch input must be a non-empty list."],
+        }
+    if len(input_records) > io_manager.MAX_BATCH_RECORDS:
+        return {
+            "ok": False,
+            "results": [],
+            "saved_count": 0,
+            "schedule": build_current_schedule(resolved_data_file, today=today),
+            "errors": [
+                f"Batch input may contain at most {io_manager.MAX_BATCH_RECORDS} "
+                "records."
+            ],
+        }
+
+    results = []
+    for input_record in input_records:
+        if not isinstance(input_record, dict):
+            results.append(
+                {
+                    "ok": False,
+                    "record": None,
+                    "errors": ["Assessment input must be a JSON object."],
+                    "ai_attempts": 0,
+                    "preserved": False,
+                }
+            )
+            continue
+
+        record_id = input_record.get("record_id")
+        existing_records = data_manager.load_records(resolved_data_file)
+        if record_id and data_manager.get_latest_record(existing_records, record_id):
+            result = reprocess_assessment(
+                record_id,
+                input_record,
+                data_file=resolved_data_file,
+                api_caller=api_caller,
+                today=today,
+            )
+        else:
+            result = process_assessment(
+                input_record,
+                data_file=resolved_data_file,
+                api_caller=api_caller,
+                today=today,
+                record_id=record_id,
+            )
+        results.append(result)
+
+    schedule = build_current_schedule(resolved_data_file, today=today)
+    return {
+        "ok": all(result["ok"] for result in results),
+        "results": results,
+        "saved_count": sum(result.get("record") is not None for result in results),
+        "schedule": schedule,
     }
 
 
@@ -115,7 +301,44 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     data_file = arguments.pop("data_file", None)
-    result = process_assessment(arguments, data_file=data_file)
+    batch_file = arguments.pop("batch_file", None)
+    if batch_file:
+        single_input_supplied = any(
+            arguments.get(field) not in (None, "", [])
+            for field in io_manager.ASSESSMENT_INPUT_FIELDS
+        )
+        if single_input_supplied:
+            io_manager.display_processing_result(
+                {
+                    "ok": False,
+                    "errors": [
+                        "Use either --batch-file or single-assessment arguments."
+                    ],
+                }
+            )
+            return 2
+        batch_input = io_manager.load_batch_input(batch_file)
+        if batch_input["errors"]:
+            io_manager.display_processing_result(
+                {"ok": False, "errors": batch_input["errors"]}
+            )
+            return 2
+        batch_result = process_batch(
+            batch_input["records"],
+            data_file=data_file,
+        )
+        io_manager.display_batch_result(batch_result)
+        return 0 if batch_result["ok"] else 1
+
+    record_id = arguments.get("record_id")
+    if record_id:
+        result = reprocess_assessment(
+            record_id,
+            arguments,
+            data_file=data_file,
+        )
+    else:
+        result = process_assessment(arguments, data_file=data_file)
     io_manager.display_processing_result(result)
     if result["ok"]:
         return 0

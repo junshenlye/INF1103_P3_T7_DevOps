@@ -64,3 +64,40 @@ def test_happy_path_processes_and_persists_one_record(tmp_path, monkeypatch):
     assert result["record"]["priority"] == "HIGH"
     assert result["ai_attempts"] == 1
     assert data_manager.load_records(str(data_file)) == [result["record"]]
+
+
+def test_cli_routes_batch_file_to_multi_record_pipeline(tmp_path, monkeypatch, capsys):
+    batch_file = tmp_path / "batch.json"
+    batch_file.write_text(
+        json.dumps(
+            [
+                {
+                    "module": "INF1103",
+                    "assessment_type": "Project",
+                    "deadline": "2026-10-15",
+                    "weightage": 30,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_process_batch(records, data_file=None):
+        calls.append((records, data_file))
+        return {
+            "ok": True,
+            "results": [],
+            "saved_count": 0,
+            "schedule": {"blocks": [], "excluded_records": [], "warnings": []},
+        }
+
+    monkeypatch.setattr(main, "process_batch", fake_process_batch)
+
+    exit_code = main.main(
+        ["--batch-file", str(batch_file), "--data-file", str(tmp_path / "data.json")]
+    )
+
+    assert exit_code == 0
+    assert calls[0][0][0]["module"] == "INF1103"
+    assert "Processed 0 assessment record(s)." in capsys.readouterr().out

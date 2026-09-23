@@ -1,3 +1,5 @@
+import stat
+
 from src import data_manager
 
 
@@ -62,3 +64,56 @@ def test_save_records_rejects_contract_violations(tmp_path):
 
     assert data_manager.save_records([{"record_id": "incomplete-shape"}], str(data_file)) is False
     assert data_file.exists() is False
+
+
+def test_latest_record_helpers_preserve_revision_history():
+    revision_one = build_record("record-001", "INF1103", "INCOMPLETE")
+    revision_two = build_record("record-001", "INF1103", "READY")
+    revision_two["revision"] = 2
+    other_record = build_record("record-002", "INF1104", "READY")
+    records = [revision_one, other_record, revision_two]
+
+    assert data_manager.get_record_history(records, "record-001") == [
+        revision_one,
+        revision_two,
+    ]
+    assert data_manager.get_latest_record(records, "record-001") == revision_two
+    assert data_manager.next_revision(records, "record-001") == 3
+    assert set(record["record_id"] for record in data_manager.latest_records(records)) == {
+        "record-001",
+        "record-002",
+    }
+
+
+def test_append_refuses_to_overwrite_corrupt_store(tmp_path):
+    data_file = tmp_path / "schedules.json"
+    data_file.write_text("not-json", encoding="utf-8")
+
+    saved = data_manager.save_record_revision(
+        build_record("record-001", "INF1103", "READY"),
+        str(data_file),
+    )
+
+    assert saved is False
+    assert data_file.read_text(encoding="utf-8") == "not-json"
+
+
+def test_saved_store_is_private_and_leaves_no_temporary_file(tmp_path):
+    data_file = tmp_path / "schedules.json"
+
+    assert data_manager.save_records(
+        [build_record("record-001", "INF1103", "READY")],
+        str(data_file),
+    ) is True
+
+    assert stat.S_IMODE(data_file.stat().st_mode) == 0o600
+    assert list(tmp_path.glob(".schedules.json.*.tmp")) == []
+
+
+def test_duplicate_record_revision_is_rejected(tmp_path):
+    data_file = tmp_path / "schedules.json"
+    record = build_record("record-001", "INF1103", "READY")
+
+    assert data_manager.save_record_revision(record, str(data_file)) is True
+    assert data_manager.save_record_revision(record, str(data_file)) is False
+    assert data_manager.load_records(str(data_file)) == [record]

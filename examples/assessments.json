@@ -1,0 +1,34 @@
+[
+  {
+    "module": "UCS1001",
+    "assessment_type": "Reader Response Essay",
+    "deadline": null,
+    "weightage": 30,
+    "prompt": "Use the attached assessment summary as evidence. It provides only a teaching week, so do not invent an exact date and explain what is missing.",
+    "image_paths": ["../test_case/UCS1001.png"]
+  },
+  {
+    "module": "INF1102",
+    "assessment_type": "Project",
+    "deadline": "2026-10-23",
+    "weightage": 25,
+    "prompt": "Process this assessment and preserve the supplied exact deadline.",
+    "image_paths": []
+  },
+  {
+    "module": "INF1104",
+    "assessment_type": "Quiz 1",
+    "deadline": "2026-10-08",
+    "weightage": 15,
+    "prompt": "Process this quiz and preserve the supplied exact deadline.",
+    "image_paths": []
+  },
+  {
+    "module": "INF1103",
+    "assessment_type": "Procedural Project",
+    "deadline": "2026-10-12",
+    "weightage": 30,
+    "prompt": "Process this project and preserve the supplied exact deadline.",
+    "image_paths": []
+  }
+]

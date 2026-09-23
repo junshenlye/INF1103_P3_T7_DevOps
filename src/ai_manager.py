@@ -16,6 +16,8 @@ from . import contracts
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_MAX_ATTEMPTS = 3
+MAX_ALLOWED_ATTEMPTS = 5
 EXTRACTION_FIELDS = (
     "module",
     "assessment_type",
@@ -29,7 +31,9 @@ EXTRACTION_FIELDS = (
 def build_prompt(input_record: Dict[str, Any]) -> str:
     """Build a strict extraction prompt without adding business rules."""
     prompt_input = {
-        key: value for key, value in input_record.items() if key != "image_paths"
+        key: value
+        for key, value in input_record.items()
+        if key not in ("image_paths", "record_id")
     }
     schema_example = {
         "module": "INF1103",
@@ -239,6 +243,18 @@ def validate_extraction(extraction: Dict[str, Any]) -> List[str]:
     else:
         for index, issue in enumerate(issues):
             errors.extend(contracts.validate_issue_contract(issue, index))
+        if isinstance(extracted_missing_fields, list):
+            for field in ("deadline", "weightage"):
+                if field in extracted_missing_fields and not any(
+                    isinstance(issue, dict)
+                    and issue.get("field") == field
+                    and isinstance(issue.get("feedback"), str)
+                    and issue["feedback"].strip()
+                    for issue in issues
+                ):
+                    errors.append(
+                        f"A feedback issue is required for missing {field}."
+                    )
 
     return errors
 
@@ -272,49 +288,69 @@ def process_record(
 
     caller = api_caller or call_openrouter
     caller_api_key = api_key if api_caller is None else ""
-    LOGGER.info("AI request attempt 1 using model %s", model)
-    try:
-        response_text = caller(
-            prompt=build_prompt(input_record),
-            image_paths=list(input_record.get("image_paths", [])),
-            api_key=caller_api_key,
-            model=model,
-            base_url=base_url,
-        )
-        extraction = parse_model_response(response_text)
-        schema_errors = validate_extraction(extraction)
-    except (
-        OSError,
-        http.client.HTTPException,
-        IndexError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ) as error:
-        safe_error = _safe_processing_error(error)
-        LOGGER.error("AI request or parsing failed: %s", safe_error)
-        return {
-            "ok": False,
-            "extraction": None,
-            "errors": [safe_error],
-            "attempts": 1,
-        }
+    max_attempts = _read_max_attempts()
+    last_errors = ["AI response could not be processed."]
 
-    if schema_errors:
-        LOGGER.error("AI response failed schema validation: %s", schema_errors)
+    for attempt in range(1, max_attempts + 1):
+        LOGGER.info("AI request attempt %s using model %s", attempt, model)
+        try:
+            response_text = caller(
+                prompt=build_prompt(input_record),
+                image_paths=list(input_record.get("image_paths", [])),
+                api_key=caller_api_key,
+                model=model,
+                base_url=base_url,
+            )
+            extraction = parse_model_response(response_text)
+            schema_errors = validate_extraction(extraction)
+        except (
+            OSError,
+            http.client.HTTPException,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            last_errors = [_safe_processing_error(error)]
+            LOGGER.error(
+                "AI request or parsing failed on attempt %s: %s",
+                attempt,
+                last_errors[0],
+            )
+            continue
+
+        if schema_errors:
+            last_errors = schema_errors
+            LOGGER.error(
+                "AI response failed schema validation on attempt %s: %s",
+                attempt,
+                schema_errors,
+            )
+            continue
+
         return {
-            "ok": False,
-            "extraction": None,
-            "errors": schema_errors,
-            "attempts": 1,
+            "ok": True,
+            "extraction": extraction,
+            "errors": [],
+            "attempts": attempt,
         }
 
     return {
-        "ok": True,
-        "extraction": extraction,
-        "errors": [],
-        "attempts": 1,
+        "ok": False,
+        "extraction": None,
+        "errors": last_errors,
+        "attempts": max_attempts,
     }
+
+
+def _read_max_attempts() -> int:
+    """Read a small bounded attempt count from local configuration."""
+    raw_value = os.getenv("AI_MAX_RETRIES", str(DEFAULT_MAX_ATTEMPTS)).strip()
+    try:
+        configured_attempts = int(raw_value)
+    except ValueError:
+        return DEFAULT_MAX_ATTEMPTS
+    return max(1, min(configured_attempts, MAX_ALLOWED_ATTEMPTS))
 
 
 def _safe_processing_error(error: Exception) -> str:
