@@ -66,3 +66,77 @@ Invalid AI outputs will be rejected and regenerated before being displayed to th
 Git Repository:
 https://github.com/junshenlye/INF1103_P3_T7_DevOps 
 
+## MVP architecture
+
+The assessed application core lives in `src/` and is entirely procedural. The
+mandatory flow is:
+
+```text
+User / file -> io_manager -> ai_manager -> logic_manager -> data_manager
+```
+
+- `src/io_manager.py` owns terminal input, validation, formatting, and all
+  user-facing output calls.
+- `src/ai_manager.py` owns prompt construction, OpenRouter communication,
+  response parsing, and AI schema validation.
+- `src/logic_manager.py` owns deterministic assessment and priority rules.
+- `src/data_manager.py` owns JSON persistence and record queries.
+- `src/main.py` orchestrates those functions and remains the CLI entry point.
+- `src/contracts.py` is the single source of truth for the shared record shape.
+
+The existing `frontend-demo/` is optional visualisation support. It must not
+contain assessment, scheduling, AI, or persistence rules.
+
+Project-owned Python code must not define classes. Third-party libraries may
+use classes internally.
+
+## Frozen assessment record contract
+
+```json
+{
+  "record_id": "string",
+  "module": "string",
+  "assessment_type": "string",
+  "deadline": "YYYY-MM-DD or null",
+  "weightage": "number or null",
+  "priority": "HIGH | MEDIUM | LOW | null",
+  "status": "READY | INCOMPLETE | NEEDS_REVIEW | CONFLICT | CONSTRAINED",
+  "missing_fields": [],
+  "issues": [
+    {
+      "type": "string",
+      "field": "string or null",
+      "severity": "info | warning | error",
+      "feedback": "string"
+    }
+  ],
+  "revision": 1
+}
+```
+
+Changing this contract requires an explicit review of affected modules and
+stored-data migration impact before implementation.
+
+## Run the procedural skeleton
+
+Requires Python 3.9 or newer.
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m src.main
+```
+
+The local `.env` file is intentionally excluded from Git. Add an OpenRouter API
+key there only when AI integration begins. Never commit or display that key.
+
+## Run tests
+
+```sh
+python -m pytest
+```
+
+The initial suite checks the frozen contract, safe JSON loading, record
+filtering, CLI startup, absence of project-defined classes, and confinement of
+terminal output to the I/O Manager.
