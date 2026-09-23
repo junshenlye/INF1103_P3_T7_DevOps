@@ -201,3 +201,36 @@ The suite checks the frozen contract, multimodal request shape, bounded AI
 retries, missing information, source conflicts, partial schedules, revision
 history, corruption-safe persistence, CLI startup, absence of project-defined
 classes, and confinement of terminal output to the I/O Manager.
+
+## Run with Docker
+
+The container runs the same procedural CLI and mounts `data/` so schedules and
+revision history survive container replacement. Populate the ignored `.env`
+before starting it.
+
+Build and show the current saved schedule:
+
+```sh
+docker compose up --build
+```
+
+Process the multi-assessment example through the container:
+
+```sh
+docker compose run --rm app --batch-file examples/assessments.json
+```
+
+Process one assessment by passing the same CLI flags used outside Docker:
+
+```sh
+docker compose run --rm app \
+  --module INF1103 \
+  --assessment-type "Procedural Project" \
+  --deadline 2026-10-12 \
+  --weightage 30 \
+  --prompt "Process this assessment."
+```
+
+No port is exposed in the core Docker milestone because this checkpoint remains
+a CLI application. The later demo frontend will call these same procedural
+functions rather than duplicating scheduling rules.

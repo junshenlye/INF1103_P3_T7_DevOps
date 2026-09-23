@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+.venv
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+.DS_Store
+.Dockerfile
+frontend-demo
+tests
