@@ -23,8 +23,8 @@ const stageLabels = {
   ai_validation: "Validating Nemotron response",
   retrying: "Retrying model extraction",
   ai_complete: "AI extraction validated",
-  building_records: "Building assessment records",
-  scheduling: "Recalculating global schedule",
+  planning: "Building weekly plan",
+  saving: "Saving module plan",
   complete: "Extraction complete",
   failed: "Extraction stopped",
 };
@@ -37,8 +37,8 @@ const stageProgress = {
   retrying: 48,
   ai_validation: 62,
   ai_complete: 72,
-  building_records: 80,
-  scheduling: 90,
+  planning: 82,
+  saving: 92,
   complete: 100,
   failed: 100,
 };

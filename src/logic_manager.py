@@ -1,141 +1,50 @@
-"""Deterministic status, priority, and week-block rules."""
-
-import re
-from typing import Any, Dict, List
+"""Convert extracted assessments into a single-module weekly plan."""
 
 
-def deadline_week(deadline: str) -> int:
-    """Convert a validated 'Week N' deadline into its week number."""
-    return int(re.fullmatch(r"Week ([1-9]|[1-4][0-9]|5[0-2])", deadline).group(1))
-
-
-def calculate_priority(deadline: str, weightage: float) -> str:
-    """Prioritise earlier and heavier assessments with a small score."""
-    week = deadline_week(deadline)
-    urgency = 3 if week <= 3 else 2 if week <= 7 else 1
-    impact = 3 if weightage >= 40 else 2 if weightage >= 20 else 1
-    score = urgency + impact
-    if score >= 5:
-        return "HIGH"
-    if score >= 3:
-        return "MEDIUM"
-    return "LOW"
-
-
-def apply_business_rules(
-    ai_record: Dict[str, Any],
-    record_id: str,
-    revision: int,
-) -> Dict[str, Any]:
-    """Turn one validated AI event into the frozen saved record."""
-    missing_fields = [
-        field
-        for field in ("deadline", "weightage")
-        if ai_record.get(field) is None
-    ]
-    error_issues = [
-        issue
-        for issue in ai_record.get("issues", [])
-        if issue.get("severity") == "error"
-    ]
-    has_conflict = any(
-        "conflict" in issue.get("type", "").lower()
-        or "disagree" in issue.get("type", "").lower()
-        for issue in error_issues
-    )
-    if has_conflict:
-        status = "CONFLICT"
-    elif missing_fields:
-        status = "INCOMPLETE"
-    elif error_issues:
-        status = "NEEDS_REVIEW"
-    else:
-        status = "READY"
-
-    priority = None
-    if status == "READY":
-        priority = calculate_priority(
-            ai_record["deadline"],
-            ai_record["weightage"],
+def build_plan(module, assessments):
+    """Add deterministic status and priority, then build week columns."""
+    records = []
+    for assessment in assessments:
+        ready = (
+            assessment.get("deadline") is not None
+            and assessment.get("weightage") is not None
         )
-    return {
-        "record_id": record_id,
-        "module": ai_record.get("module", ""),
-        "assessment_type": ai_record.get("assessment_type", ""),
-        "deadline": ai_record.get("deadline"),
-        "weightage": ai_record.get("weightage"),
-        "priority": priority,
-        "status": status,
-        "missing_fields": missing_fields,
-        "issues": list(ai_record.get("issues", [])),
-        "revision": revision,
-    }
-
-
-def build_schedule(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Group one module's READY assessments into compact week columns."""
-    blocks = []
-    excluded_records = []
-    for record in records:
-        if record.get("status") != "READY":
-            excluded_records.append(
-                {
-                    "record_id": record.get("record_id"),
-                    "module": record.get("module"),
-                    "status": record.get("status"),
-                }
-            )
-            continue
-        blocks.append(
+        records.append(
             {
-                "record_id": record["record_id"],
-                "revision": record["revision"],
-                "module": record["module"],
-                "assessment_type": record["assessment_type"],
-                "deadline": record["deadline"],
-                "week_number": deadline_week(record["deadline"]),
-                "priority": record["priority"],
-                "assessment_weightage": record["weightage"],
+                "module": module,
+                "assessment_type": assessment["assessment_type"],
+                "deadline": assessment.get("deadline"),
+                "weightage": assessment.get("weightage"),
+                "priority": (
+                    _priority(assessment["deadline"], assessment["weightage"])
+                    if ready
+                    else None
+                ),
+                "status": "READY" if ready else "REVIEW",
+                "issues": list(assessment.get("issues", [])),
             }
         )
 
+    blocks = [
+        {
+            "assessment_type": record["assessment_type"],
+            "deadline": record["deadline"],
+            "week_number": int(record["deadline"].split()[1]),
+            "priority": record["priority"],
+            "weightage": record["weightage"],
+        }
+        for record in records
+        if record["status"] == "READY"
+    ]
     blocks.sort(
         key=lambda block: (
             block["week_number"],
             ("LOW", "MEDIUM", "HIGH").index(block["priority"]),
-            block["assessment_weightage"],
-            block["record_id"],
+            block["weightage"],
         )
     )
-    _assign_stack_positions(blocks)
-    warnings = []
-    if excluded_records:
-        warnings.append(
-            f"{len(excluded_records)} assessment(s) need review before scheduling."
-        )
-    return {
-        "blocks": blocks,
-        "weeks": _build_week_columns(blocks),
-        "excluded_records": excluded_records,
-        "warnings": warnings,
-    }
-
-
-def _assign_stack_positions(blocks: List[Dict[str, Any]]) -> None:
-    """Place higher-priority assessments lower in the same week."""
-    week_counts = {}
-    for block in blocks:
-        week = block["week_number"]
-        block["stack_index"] = week_counts.get(week, 0)
-        week_counts[week] = block["stack_index"] + 1
-
-
-def _build_week_columns(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Create a continuous Week 1 to final-deadline range."""
-    if not blocks:
-        return []
-    final_week = max(block["week_number"] for block in blocks)
-    return [
+    final_week = max((block["week_number"] for block in blocks), default=0)
+    weeks = [
         {
             "week_number": week,
             "label": f"Week {week}",
@@ -143,3 +52,26 @@ def _build_week_columns(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         }
         for week in range(1, final_week + 1)
     ]
+    review_count = sum(record["status"] == "REVIEW" for record in records)
+    return {
+        "module": module,
+        "assessments": records,
+        "schedule": {
+            "weeks": weeks,
+            "blocks": blocks,
+            "warnings": (
+                [f"{review_count} assessment(s) need review before scheduling."]
+                if review_count
+                else []
+            ),
+        },
+    }
+
+
+def _priority(deadline, weightage):
+    """Prioritise earlier and heavier assessments."""
+    week = int(deadline.split()[1])
+    score = (3 if week <= 3 else 2 if week <= 7 else 1) + (
+        3 if weightage >= 40 else 2 if weightage >= 20 else 1
+    )
+    return "HIGH" if score >= 5 else "MEDIUM" if score >= 3 else "LOW"

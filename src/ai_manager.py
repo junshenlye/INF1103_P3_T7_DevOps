@@ -1,145 +1,122 @@
-"""OpenRouter communication and AI extraction schema validation."""
+"""Send module evidence to Nemotron and normalize its structured reply."""
 
 import base64
 import http.client
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import ssl
-from typing import Any, Callable, Dict, List, Optional
-
-from . import io_manager
 
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
-DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MAX_ATTEMPTS = 3
-MAX_ALLOWED_ATTEMPTS = 5
-MAX_EXTRACTED_ASSESSMENTS = 30
-EXTRACTION_FIELDS = (
-    "module",
-    "assessment_type",
-    "deadline",
-    "weightage",
-    "missing_fields",
-    "issues",
-)
+MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 
 
-def build_source_prompt(input_source: Dict[str, Any]) -> str:
-    """Build the one-to-many extraction prompt for a module evidence pack."""
-    module = input_source["module"].strip().upper()
-    source_context = {
-        "module": module,
-        "prompt": input_source.get("prompt", ""),
-        "attached_image_count": len(input_source.get("image_paths", [])),
-    }
-    assessment_example = {
-        "module": module,
-        "assessment_type": "Quiz 1",
-        "deadline": "Week 5",
-        "weightage": 10,
-        "missing_fields": [],
-        "issues": [],
-    }
-    response_example = {"assessments": [assessment_example]}
+def extract_assessments(input_data, api_caller=None, progress_callback=None):
+    """Return every extracted assessment or a short list of errors."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model = os.getenv("OPENROUTER_MODEL", MODEL).strip() or MODEL
+    if api_caller is None and not api_key:
+        return {"assessments": [], "errors": ["OPENROUTER_API_KEY is missing."]}
+
+    caller = api_caller or _call_openrouter
+    attempts = _attempt_count()
+    last_error = "The model could not process this evidence."
+    for attempt in range(1, attempts + 1):
+        _progress(
+            progress_callback,
+            "ai_request",
+            "Nemotron is reading the module evidence.",
+            attempt=attempt,
+            max_attempts=attempts,
+        )
+        try:
+            reply = caller(
+                prompt=_build_prompt(input_data),
+                image_paths=input_data.get("image_paths", []),
+                api_key=api_key if api_caller is None else "",
+                model=model,
+            )
+            _progress(
+                progress_callback,
+                "ai_validation",
+                "Nemotron replied; checking the structured result.",
+                attempt=attempt,
+                max_attempts=attempts,
+            )
+            result = _normalize_reply(_parse_reply(reply))
+            if result["assessments"] or result["errors"]:
+                _progress(
+                    progress_callback,
+                    "ai_complete",
+                    f"Received {len(result['assessments'])} assessment(s).",
+                    attempt=attempt,
+                    max_attempts=attempts,
+                    event_count=len(result["assessments"]),
+                )
+                return result
+            last_error = "The model returned no assessments or explanation."
+        except (ConnectionError, OSError, TypeError, ValueError, KeyError) as error:
+            last_error = _safe_error(error)
+            LOGGER.warning("Nemotron attempt %s failed: %s", attempt, last_error)
+
+        _progress(
+            progress_callback,
+            "retrying" if attempt < attempts else "failed",
+            last_error,
+            attempt=attempt,
+            max_attempts=attempts,
+        )
+    return {"assessments": [], "errors": [last_error]}
+
+
+def _build_prompt(input_data):
+    """Describe universal grouping rules without restricting assessment names."""
+    module = input_data["module"].strip().upper()
+    context = input_data.get("prompt", "").strip()
     return (
-        "Inspect all supplied images and context as one module evidence pack.\n"
-        "Find every distinct graded assessment event visible or explicitly "
-        "described, including quizzes, assignments, projects, presentations, "
-        "practical tests, exams, and submission milestones.\n"
-        "Return exactly one JSON object with exactly one key: assessments. "
-        "assessments must be a non-empty JSON list with one object per event.\n"
-        f"Return at most {MAX_EXTRACTED_ASSESSMENTS} events and do not duplicate "
-        "the same event across images.\n"
-        f"The module is a trusted user fact. Every event must use exactly {module}.\n"
-        f"Each event must use exactly these keys: {', '.join(EXTRACTION_FIELDS)}.\n"
-        "Do not calculate status or priority.\n"
-        "Do not invent missing information. Use null for a missing deadline or "
-        "weightage and list its field name in missing_fields.\n"
-        "A deadline must use the exact form Week N, for example Week 3. "
-        "Use null unless the source explicitly gives the module week.\n"
-        "Each issue must contain type, field, severity, and feedback. Severity "
-        "must be info, warning, or error. Conflicting source values must be "
-        "reported as an error issue instead of silently choosing one.\n"
-        f"Example shape: {json.dumps(response_example, separators=(',', ':'))}\n"
-        f"Source context: {json.dumps(source_context, ensure_ascii=False)}"
+        f"Extract every graded component for module {module} from all supplied "
+        "evidence. Assessment names are unrestricted: copy the name shown in "
+        "the source, including unfamiliar formats such as placements, studios, "
+        "internships, capstones, portfolios, or practical work.\n"
+        "Create one assessment when repeated activities share one collective "
+        "weightage. Create separate assessments only when the source gives them "
+        "separate weights or identifies them as independent graded components.\n"
+        "Use deadline Week N only when one exact module week is stated. For a "
+        "range, recurrence, calendar date, conflict, or missing deadline, use "
+        "null and explain the source wording in issues. Never guess or divide a "
+        "shared weightage. Return all visible components, or explain why none can "
+        f"be extracted. Extra user context: {context or 'None'}"
     )
 
 
-def encode_image_data_url(image_path: str) -> str:
-    """Encode one supported local image for an OpenRouter multimodal request."""
-    path = os.path.abspath(image_path)
-    extension = os.path.splitext(path)[1].lower()
-    media_types = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }
-    if extension not in media_types:
-        raise ValueError("Image must be PNG, JPEG, WEBP, or GIF.")
-
-    with open(path, "rb") as image_file:
-        encoded = base64.b64encode(image_file.read()).decode("ascii")
-    return f"data:{media_types[extension]};base64,{encoded}"
-
-
-def build_user_content(prompt: str, image_paths: List[str]) -> List[Dict[str, Any]]:
-    """Build text-first multimodal content for OpenRouter."""
-    content = [{"type": "text", "text": prompt}]
-    for image_path in image_paths:
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": encode_image_data_url(image_path)},
-            }
-        )
-    return content
-
-
-def call_openrouter(
-    prompt: str,
-    image_paths: List[str],
-    api_key: str,
-    model: str,
-    base_url: str,
-    timeout_seconds: int = 45,
-) -> str:
-    """Call the OpenRouter chat-completions endpoint and return message text."""
-    if base_url.rstrip("/") != DEFAULT_BASE_URL:
-        raise ValueError("OpenRouter base URL is not the official HTTPS endpoint.")
-
+def _call_openrouter(prompt, image_paths, api_key, model):
+    """Call OpenRouter and return its assistant message."""
     request_body = json.dumps(
         {
             "model": model,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You extract academic assessment data and return only "
-                        "the requested JSON object."
-                    ),
+                    "content": "Extract academic assessment facts without guessing.",
                 },
-                {
-                    "role": "user",
-                    "content": build_user_content(prompt, image_paths),
-                },
+                {"role": "user", "content": _user_content(prompt, image_paths)},
             ],
+            "tools": [_extraction_tool()],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "submit_assessments"},
+            },
+            "reasoning": {"enabled": False},
             "temperature": 0,
-            "max_tokens": 3000,
+            "max_tokens": 2000,
         }
     ).encode("utf-8")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
     connection = http.client.HTTPSConnection(
         "openrouter.ai",
-        timeout=timeout_seconds,
+        timeout=90,
         context=ssl.create_default_context(),
     )
     try:
@@ -147,406 +124,215 @@ def call_openrouter(
             "POST",
             "/api/v1/chat/completions",
             body=request_body,
-            headers=headers,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
         )
         response = connection.getresponse()
-        response_body = response.read()
-    except (OSError, http.client.HTTPException) as error:
+        payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
         raise ConnectionError("OpenRouter request failed.") from error
     finally:
         connection.close()
 
-    if not 200 <= response.status < 300:
-        raise ConnectionError("OpenRouter request failed.")
+    if not 200 <= response.status < 300 or payload.get("error"):
+        raise ConnectionError("OpenRouter could not serve the model request.")
+    choices = payload.get("choices")
+    if not choices or not isinstance(choices[0].get("message"), dict):
+        raise ValueError("OpenRouter returned no model message.")
+    return choices[0]["message"]
 
-    payload = json.loads(response_body.decode("utf-8"))
-    content = payload["choices"][0]["message"]["content"]
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("OpenRouter returned an empty model response.")
+
+def _user_content(prompt, image_paths):
+    """Build one multimodal message."""
+    content = [{"type": "text", "text": prompt}]
+    media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    for image_path in image_paths:
+        path = Path(image_path)
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{media_types[path.suffix.lower()]};base64,{encoded}"
+                },
+            }
+        )
     return content
 
 
-def parse_model_response(response_text: str) -> Dict[str, Any]:
-    """Parse a plain or fenced JSON object returned by the model."""
-    text = response_text.strip()
-    if text.startswith("```") and text.endswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-
-    parsed = json.loads(text)
-    if not isinstance(parsed, dict):
-        raise ValueError("AI response must be one JSON object.")
-    return parsed
-
-
-def validate_extraction(extraction: Dict[str, Any]) -> List[str]:
-    """Return schema errors for AI-extracted fields."""
-    if not isinstance(extraction, dict):
-        return ["AI extraction must be a dictionary."]
-
-    errors = []
-    missing_fields = [field for field in EXTRACTION_FIELDS if field not in extraction]
-    extra_fields = [field for field in extraction if field not in EXTRACTION_FIELDS]
-    if missing_fields:
-        errors.append(f"Missing AI fields: {', '.join(missing_fields)}.")
-    if extra_fields:
-        errors.append(f"Unexpected AI fields: {', '.join(extra_fields)}.")
-    if errors:
-        return errors
-
-    if not isinstance(extraction["module"], str) or not extraction["module"].strip():
-        errors.append("module must be a non-empty string.")
-    if (
-        not isinstance(extraction["assessment_type"], str)
-        or not extraction["assessment_type"].strip()
-    ):
-        errors.append("assessment_type must be a non-empty string.")
-
-    deadline = extraction["deadline"]
-    if deadline is not None:
-        if not isinstance(deadline, str):
-            errors.append("deadline must be a Week N string or null.")
-        elif re.fullmatch(r"Week ([1-9]|[1-4][0-9]|5[0-2])", deadline) is None:
-            errors.append("deadline must use Week N format.")
-
-    weightage = extraction["weightage"]
-    if weightage is not None:
-        if isinstance(weightage, bool) or not isinstance(weightage, (int, float)):
-            errors.append("weightage must be a number or null.")
-        elif not 0 <= weightage <= 100:
-            errors.append("weightage must be between 0 and 100.")
-
-    extracted_missing_fields = extraction["missing_fields"]
-    allowed_missing_fields = {
-        "module",
-        "assessment_type",
-        "deadline",
-        "weightage",
+def _extraction_tool():
+    """Return the one stable schema used for every assessment format."""
+    assessment = {
+        "type": "object",
+        "properties": {
+            "assessment_type": {"type": "string"},
+            "deadline": {"type": ["string", "null"]},
+            "weightage": {"type": ["number", "null"]},
+            "issues": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["assessment_type", "deadline", "weightage", "issues"],
+        "additionalProperties": False,
     }
-    if not isinstance(extracted_missing_fields, list) or not all(
-        isinstance(field, str) and field in allowed_missing_fields
-        for field in extracted_missing_fields
-    ):
-        errors.append("missing_fields must contain only known field names.")
-    else:
-        expected_missing_fields = {
-            field
-            for field in ("deadline", "weightage")
-            if extraction[field] is None
-        }
-        if set(extracted_missing_fields) != expected_missing_fields:
-            errors.append("missing_fields must exactly match null extracted values.")
-
-    issues = extraction["issues"]
-    if not isinstance(issues, list):
-        errors.append("issues must be a list.")
-    else:
-        for index, issue in enumerate(issues):
-            errors.extend(io_manager.validate_issue(issue, index))
-        if isinstance(extracted_missing_fields, list):
-            for field in ("deadline", "weightage"):
-                if field in extracted_missing_fields and not any(
-                    isinstance(issue, dict)
-                    and issue.get("field") == field
-                    and isinstance(issue.get("feedback"), str)
-                    and issue["feedback"].strip()
-                    for issue in issues
-                ):
-                    errors.append(
-                        f"A feedback issue is required for missing {field}."
-                    )
-
-    return errors
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_assessments",
+            "description": "Submit every extracted assessment or extraction error.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "assessments": {"type": "array", "items": assessment},
+                    "errors": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["assessments", "errors"],
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
-def validate_source_extraction(
-    response: Dict[str, Any],
-    expected_module: str,
-) -> List[str]:
-    """Validate one model response containing many assessment events."""
-    if not isinstance(response, dict):
-        return ["AI source extraction must be a dictionary."]
-    if set(response) != {"assessments"}:
-        return ["AI source extraction must contain only assessments."]
+def _parse_reply(reply):
+    """Read tool arguments, plain JSON, or a JSON object inside model text."""
+    if isinstance(reply, dict) and "assessments" in reply:
+        return reply
+    if not isinstance(reply, dict):
+        return _json_object(str(reply))
 
-    assessments = response["assessments"]
-    if not isinstance(assessments, list) or not assessments:
-        return ["AI source extraction must contain at least one assessment."]
-    if len(assessments) > MAX_EXTRACTED_ASSESSMENTS:
-        return [
-            "AI source extraction exceeded the assessment event limit of "
-            f"{MAX_EXTRACTED_ASSESSMENTS}."
-        ]
+    for tool_call in reply.get("tool_calls", []):
+        function = tool_call.get("function", {})
+        if function.get("name") == "submit_assessments":
+            return _json_object(function.get("arguments", ""))
 
-    errors = []
-    seen_events = set()
-    normalized_module = expected_module.strip().upper()
-    for index, assessment in enumerate(assessments):
-        item_errors = validate_extraction(assessment)
-        errors.extend(
-            f"assessments[{index}]: {error}" for error in item_errors
+    content = reply.get("content", "")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
         )
-        if item_errors:
+    return _json_object(content)
+
+
+def _json_object(text):
+    """Return the first complete JSON object found in model text."""
+    if not isinstance(text, str):
+        raise ValueError("The model response was not text.")
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(text):
+        if character != "{":
             continue
-        if assessment["module"].strip().upper() != normalized_module:
-            errors.append(
-                f"assessments[{index}]: module must match the supplied module."
-            )
-        event_key = (
-            assessment["assessment_type"].strip().casefold(),
-            assessment["deadline"],
-            assessment["weightage"],
-        )
-        if event_key in seen_events:
-            errors.append(f"assessments[{index}]: duplicate assessment event.")
-        seen_events.add(event_key)
-    return errors
-
-
-def normalize_source_response(
-    response: Dict[str, Any],
-    expected_module: str,
-) -> Dict[str, Any]:
-    """Repair safe omissions without inventing assessment facts."""
-    if not isinstance(response, dict) or not isinstance(
-        response.get("assessments"), list
-    ):
-        return response
-
-    normalized_assessments = []
-    normalized_module = expected_module.strip().upper()
-    for assessment in response["assessments"]:
-        if not isinstance(assessment, dict):
-            normalized_assessments.append(assessment)
+        try:
+            value, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
             continue
-        normalized = dict(assessment)
-        normalized["module"] = normalized_module
-        deadline = normalized.get("deadline")
-        if isinstance(deadline, str):
-            week_match = re.fullmatch(
+        if isinstance(value, dict):
+            return value
+    raise ValueError("The model did not return usable structured data.")
+
+
+def _normalize_reply(reply):
+    """Normalize harmless formatting differences and preserve uncertainty."""
+    if not isinstance(reply, dict) or not isinstance(reply.get("assessments"), list):
+        raise ValueError("The model result did not contain an assessments list.")
+
+    errors = [str(error) for error in reply.get("errors", []) if str(error).strip()]
+    assessments = []
+    for index, item in enumerate(reply["assessments"]):
+        if not isinstance(item, dict):
+            errors.append(f"Assessment {index + 1} was not structured correctly.")
+            continue
+        name = str(item.get("assessment_type") or item.get("name") or "").strip()
+        if not name:
+            errors.append(f"Assessment {index + 1} had no name.")
+            continue
+
+        issues = _issue_text(item.get("issues", []))
+        deadline = item.get("deadline")
+        week_match = (
+            re.fullmatch(
                 r"\s*week\s*([1-9]|[1-4][0-9]|5[0-2])\s*",
                 deadline,
                 flags=re.IGNORECASE,
             )
-            if week_match:
-                deadline = f"Week {int(week_match.group(1))}"
-                normalized["deadline"] = deadline
-        weightage = normalized.get("weightage")
-        if "deadline" in normalized and "weightage" in normalized:
-            normalized["missing_fields"] = [
-                field
-                for field, value in (
-                    ("deadline", deadline),
-                    ("weightage", weightage),
-                )
-                if value is None
-            ]
-        issues = normalized.get("issues")
-        if isinstance(issues, list):
-            normalized_issues = list(issues)
-            for field in normalized.get("missing_fields", []):
-                if field not in ("deadline", "weightage"):
-                    continue
-                if any(
-                    isinstance(issue, dict) and issue.get("field") == field
-                    for issue in normalized_issues
-                ):
-                    continue
-                normalized_issues.append(
-                    {
-                        "type": "MISSING_DETAIL",
-                        "field": field,
-                        "severity": "warning",
-                        "feedback": (
-                            f"No {field} was found in the supplied module evidence."
-                        ),
-                    }
-                )
-            normalized["issues"] = normalized_issues
-        normalized_assessments.append(normalized)
-    return {"assessments": normalized_assessments}
-
-
-def process_source(
-    input_source: Dict[str, Any],
-    api_caller: Optional[Callable[..., str]] = None,
-    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-) -> Dict[str, Any]:
-    """Extract and validate every assessment in one module evidence pack."""
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    base_url = (
-        os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip()
-        or DEFAULT_BASE_URL
-    )
-
-    if api_caller is None and not api_key:
-        return {
-            "ok": False,
-            "extractions": [],
-            "errors": ["OPENROUTER_API_KEY is not configured."],
-            "attempts": 0,
-        }
-    if api_caller is None and base_url.rstrip("/") != DEFAULT_BASE_URL:
-        return {
-            "ok": False,
-            "extractions": [],
-            "errors": ["OPENROUTER_BASE_URL must use the official HTTPS endpoint."],
-            "attempts": 0,
-        }
-
-    caller = api_caller or call_openrouter
-    caller_api_key = api_key if api_caller is None else ""
-    max_attempts = _read_max_attempts()
-    last_errors = ["AI response could not be processed."]
-
-    for attempt in range(1, max_attempts + 1):
-        LOGGER.info("AI source request attempt %s using model %s", attempt, model)
-        _emit_progress(
-            progress_callback,
-            {
-                "stage": "ai_request",
-                "message": "Waiting for Nemotron to read the evidence pack.",
-                "attempt": attempt,
-                "max_attempts": max_attempts,
-            },
+            if isinstance(deadline, str)
+            else None
         )
-        try:
-            response_text = caller(
-                prompt=build_source_prompt(input_source),
-                image_paths=list(input_source.get("image_paths", [])),
-                api_key=caller_api_key,
-                model=model,
-                base_url=base_url,
-            )
-            _emit_progress(
-                progress_callback,
-                {
-                    "stage": "ai_validation",
-                    "message": "Nemotron responded; validating every event.",
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                },
-            )
-            response = parse_model_response(response_text)
-            response = normalize_source_response(
-                response,
-                input_source["module"],
-            )
-            schema_errors = validate_source_extraction(
-                response,
-                input_source["module"],
-            )
-        except (
-            OSError,
-            http.client.HTTPException,
-            IndexError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as error:
-            last_errors = [_safe_processing_error(error)]
-            LOGGER.error(
-                "AI source request or parsing failed on attempt %s: %s",
-                attempt,
-                last_errors[0],
-            )
-            _emit_progress(
-                progress_callback,
-                {
-                    "stage": "retrying" if attempt < max_attempts else "failed",
-                    "message": (
-                        f"Attempt {attempt} failed: {last_errors[0]}"
-                        if attempt < max_attempts
-                        else last_errors[0]
-                    ),
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                },
-            )
-            continue
+        if week_match:
+            deadline = f"Week {int(week_match.group(1))}"
+        elif deadline is not None:
+            issues.append(f"Deadline needs review: {deadline}")
+            deadline = None
 
-        if schema_errors:
-            last_errors = schema_errors
-            LOGGER.error(
-                "AI source response failed schema validation on attempt %s: %s",
-                attempt,
-                schema_errors,
-            )
-            _emit_progress(
-                progress_callback,
-                {
-                    "stage": "retrying" if attempt < max_attempts else "failed",
-                    "message": (
-                        "The response was incomplete or malformed; retrying."
-                        if attempt < max_attempts
-                        else "The model response could not be validated."
-                    ),
-                    "attempt": attempt,
-                    "max_attempts": max_attempts,
-                },
-            )
-            continue
+        weightage = item.get("weightage")
+        if isinstance(weightage, str):
+            try:
+                weightage = float(weightage.strip().rstrip("%"))
+            except ValueError:
+                issues.append(f"Weightage needs review: {weightage}")
+                weightage = None
+        if isinstance(weightage, bool) or not isinstance(weightage, (int, float)):
+            weightage = None
+        elif not 0 <= weightage <= 100:
+            issues.append(f"Weightage needs review: {weightage}")
+            weightage = None
 
-        _emit_progress(
-            progress_callback,
+        if deadline is None and not any("deadline" in issue.lower() for issue in issues):
+            issues.append("Deadline was not found as one exact module week.")
+        if weightage is None and not any("weight" in issue.lower() for issue in issues):
+            issues.append("Weightage was not found.")
+        assessments.append(
             {
-                "stage": "ai_complete",
-                "message": (
-                    f"Validated {len(response['assessments'])} assessment event(s)."
-                ),
-                "attempt": attempt,
-                "max_attempts": max_attempts,
-                "event_count": len(response["assessments"]),
-            },
+                "assessment_type": name,
+                "deadline": deadline,
+                "weightage": weightage,
+                "issues": issues,
+            }
         )
-        return {
-            "ok": True,
-            "extractions": response["assessments"],
-            "errors": [],
-            "attempts": attempt,
-        }
-
-    return {
-        "ok": False,
-        "extractions": [],
-        "errors": last_errors,
-        "attempts": max_attempts,
-    }
+    return {"assessments": assessments, "errors": errors}
 
 
-def _read_max_attempts() -> int:
-    """Read a small bounded attempt count from local configuration."""
-    raw_value = os.getenv("AI_MAX_RETRIES", str(DEFAULT_MAX_ATTEMPTS)).strip()
+def _issue_text(issues):
+    """Reduce model issue objects or strings to user-facing comments."""
+    if not isinstance(issues, list):
+        return []
+    result = []
+    for issue in issues:
+        if isinstance(issue, str) and issue.strip():
+            result.append(issue.strip())
+        elif isinstance(issue, dict):
+            text = issue.get("feedback") or issue.get("message")
+            if isinstance(text, str) and text.strip():
+                result.append(text.strip())
+    return result
+
+
+def _attempt_count():
+    """Keep free-model retries deliberately small."""
     try:
-        configured_attempts = int(raw_value)
+        return max(1, min(int(os.getenv("AI_MAX_RETRIES", "2")), 2))
     except ValueError:
-        return DEFAULT_MAX_ATTEMPTS
-    return max(1, min(configured_attempts, MAX_ALLOWED_ATTEMPTS))
+        return 2
 
 
-def _safe_processing_error(error: Exception) -> str:
-    """Convert transport and parsing failures into non-sensitive messages."""
-    if isinstance(error, (ConnectionError, http.client.HTTPException)):
-        return "OpenRouter request failed."
+def _safe_error(error):
+    """Return a short non-sensitive failure message."""
+    if isinstance(error, ConnectionError):
+        return str(error)
     if isinstance(error, OSError):
-        return "An assessment image could not be read."
-    if isinstance(error, json.JSONDecodeError):
-        return "AI response was not valid JSON."
-    if isinstance(error, (IndexError, KeyError)):
-        return "OpenRouter response shape was invalid."
-    return "AI response could not be processed."
+        return "An uploaded image could not be read."
+    return str(error) or "The model response could not be processed."
 
 
-def _emit_progress(
-    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
-    event: Dict[str, Any],
-) -> None:
-    """Report non-sensitive progress without coupling AI logic to a UI."""
-    if progress_callback is None:
-        return
-    try:
-        progress_callback(dict(event))
-    except Exception:
-        LOGGER.warning("Progress callback failed and was ignored")
+def _progress(callback, stage, message, **details):
+    """Send optional progress without coupling the manager to Flask."""
+    if callback:
+        try:
+            callback({"stage": stage, "message": message, **details})
+        except Exception:
+            LOGGER.warning("Progress callback failed and was ignored")

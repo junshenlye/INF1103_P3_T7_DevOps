@@ -11,7 +11,7 @@ Input
   -> I/O Manager validates user data
   -> AI Manager extracts structured events
   -> Logic Manager assigns status, priority, and deadline week
-  -> Data Manager validates and saves the finished records
+  -> Data Manager saves the finished plan
 Output
 ```
 
@@ -23,19 +23,19 @@ application state at module level.
 
 ```text
 src/
-  io_manager.py       input/output and record validation
+  io_manager.py       request validation
   ai_manager.py       Nemotron/OpenRouter extraction
   logic_manager.py    deterministic status and timetable rules
-  data_manager.py     JSON/PostgreSQL persistence and history
-  main.py             passes results between managers; CLI entry point
+  data_manager.py     PostgreSQL persistence
+  main.py             passes results between managers
 
 helpers/api_server.py thin Docker HTTP adapter and temporary progress files
 frontend-demo/        host-run presentation only
 ```
 
-`data_manager.py` uses PostgreSQL when Docker supplies `DATABASE_URL`. The CLI
-continues to use JSON, so the graded procedural core does not require Docker.
-Those local JSON files are created under the Git-ignored `data/` directory.
+The core has one clear step per manager and one PostgreSQL table containing only
+the latest single-module plan. It deliberately has no CLI mode, JSON
+fallback, revision history, correction workflow, or multi-module selection.
 
 ## Run
 
@@ -71,11 +71,11 @@ Uploaded images and extraction progress files are also temporary.
 1. Enter one module code.
 2. Drop all screenshots for that module into one request.
 3. Watch the extraction stages and bounded AI retries.
-4. Review the extracted assessments.
+4. Review the extracted assessments and any missing information.
 5. See READY events as small coloured blocks from Week 1 to the final deadline.
 
 Deadlines use only `Week N` (for example, `Week 3`). Missing weeks or weights
-remain visible for correction but stay out of the timetable. Multiple events in
+remain visible for review but stay out of the timetable. Multiple events in
 the same week stack vertically, with higher priority lower in the stack.
 
 Automated test files are intentionally kept local during this early MVP and are

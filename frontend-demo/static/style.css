@@ -295,23 +295,6 @@ textarea:focus {
   margin-top: 20px;
 }
 
-.input-suffix {
-  position: relative;
-}
-
-.input-suffix input {
-  padding-right: 42px;
-}
-
-.input-suffix > span {
-  position: absolute;
-  top: 50%;
-  right: 14px;
-  transform: translateY(-50%);
-  color: var(--muted);
-  font-weight: 750;
-}
-
 .drop-zone {
   margin-top: 22px;
   padding: 25px;
@@ -551,13 +534,8 @@ textarea:focus {
   border-top-color: var(--green);
 }
 
-.review-card.status-incomplete,
-.review-card.status-needs_review {
+.review-card.status-review {
   border-top-color: var(--medium);
-}
-
-.review-card.status-conflict {
-  border-top-color: var(--high);
 }
 
 .review-card-heading {
@@ -628,46 +606,6 @@ textarea:focus {
   background: #fff4d9;
   color: #775312;
   font-size: 0.75rem;
-}
-
-.correction-panel {
-  margin-top: 15px;
-  border-top: 1px solid var(--line);
-}
-
-.correction-panel summary {
-  padding-top: 13px;
-  color: var(--green);
-  font-size: 0.75rem;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.correction-panel form {
-  margin-top: 14px;
-  display: grid;
-  gap: 12px;
-}
-
-.correction-panel input {
-  height: 42px;
-  font-size: 0.82rem;
-}
-
-.secondary-button {
-  padding: 10px 12px;
-  border: 1px solid var(--green);
-  border-radius: 9px;
-  background: transparent;
-  color: var(--green);
-  font-size: 0.78rem;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.secondary-button:hover {
-  background: var(--green);
-  color: white;
 }
 
 .compact-empty {

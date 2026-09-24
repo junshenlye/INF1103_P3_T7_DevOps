@@ -29,23 +29,6 @@ MAX_ACTIVE_JOBS = 4
 JOB_TTL_SECONDS = 15 * 60
 
 
-def parse_optional_number(raw_value, field_label, errors):
-    """Convert one optional request number without applying domain rules."""
-    if raw_value is None:
-        return None
-    if isinstance(raw_value, bool):
-        errors.append(f"{field_label} must be a number.")
-        return None
-    normalized_value = str(raw_value).strip()
-    if not normalized_value:
-        return None
-    try:
-        return float(normalized_value)
-    except ValueError:
-        errors.append(f"{field_label} must be a number.")
-        return None
-
-
 def save_uploaded_images(uploaded_files, target_directory):
     """Save uploads only for the lifetime of one extraction."""
     image_paths = []
@@ -191,17 +174,6 @@ def active_job_count():
     )
 
 
-def dashboard_payload():
-    """Return the current single-module view for the host frontend."""
-    summary = core_main.start_application()
-    return {
-        "schedule": summary["schedule"],
-        "latest_records": summary["latest_records"],
-        "records_loaded": summary["records_loaded"],
-        "focus_module": summary["focus_module"],
-    }
-
-
 def run_extraction_job(job_id, input_source, upload_directory):
     """Pass source through the core and persist visible progress."""
     update_job(
@@ -214,7 +186,7 @@ def run_extraction_job(job_id, input_source, upload_directory):
         update_job(job_id, event)
 
     try:
-        result = core_main.process_assessment_source(
+        result = core_main.process_request(
             input_source,
             progress_callback=report_progress,
         )
@@ -240,7 +212,7 @@ def run_extraction_job(job_id, input_source, upload_directory):
             job_id,
             {
                 "stage": "complete",
-                "message": f"Built {summary['extracted_count']} timetable block(s).",
+                "message": f"Extracted {summary['extracted_count']} assessment(s).",
                 "event_count": summary["extracted_count"],
             },
             status="complete",
@@ -297,7 +269,7 @@ def create_app():
 
     @app.get("/api/dashboard")
     def dashboard_api():
-        return jsonify(dashboard_payload())
+        return jsonify(core_main.get_dashboard())
 
     @app.post("/api/extractions")
     def start_extraction_api():
@@ -331,23 +303,6 @@ def create_app():
         if job is None:
             return jsonify({"errors": ["Extraction job was not found."]}), 404
         return jsonify(job)
-
-    @app.post("/api/assessments/<record_id>/review")
-    def review_assessment_api(record_id):
-        payload = request.get_json(silent=True) or request.form.to_dict()
-        errors = []
-        raw_weightage = payload.get("weightage")
-        weightage = parse_optional_number(raw_weightage, "Weightage", errors)
-        if errors:
-            return jsonify({"errors": errors}), 400
-        updates = {"assessment_type": str(payload.get("assessment_type") or "").strip()}
-        deadline = str(payload.get("deadline") or "").strip()
-        if deadline:
-            updates["deadline"] = deadline
-        if raw_weightage is not None and str(raw_weightage).strip():
-            updates["weightage"] = weightage
-        result = core_main.correct_assessment(record_id, updates)
-        return jsonify(result), (200 if result.get("ok") else 400)
 
     @app.errorhandler(RequestEntityTooLarge)
     def upload_too_large(_error):

@@ -46,36 +46,6 @@
         </section>
       {% endif %}
 
-      {% if result %}
-        <section class="result-banner {% if result.ok %}is-success{% elif result.preserved %}is-warning{% else %}is-error{% endif %}" role="status">
-          <div>
-            <strong>
-              {% if result.ok %}
-                {% if result.extracted_count %}
-                  {{ result.extracted_count }} assessment{% if result.extracted_count != 1 %}s{% endif %} extracted
-                {% else %}
-                  Assessment correction saved
-                {% endif %}
-              {% elif result.preserved %}
-                Input preserved for review
-              {% else %}
-                Evidence pack needs attention
-              {% endif %}
-            </strong>
-            {% if result.source_module %}
-              <span>{{ result.source_module }} · {{ result.ai_attempts }} AI attempt{% if result.ai_attempts != 1 %}s{% endif %}</span>
-            {% elif result.record %}
-              <span>{{ result.record.module }} · {{ result.record.assessment_type }} · {{ result.record.status }}</span>
-            {% endif %}
-          </div>
-          {% if result.errors %}
-            <ul>
-              {% for error in result.errors %}<li>{{ error }}</li>{% endfor %}
-            </ul>
-          {% endif %}
-        </section>
-      {% endif %}
-
       <section class="workspace-grid">
         <article class="panel input-panel">
           <div class="section-heading">
@@ -89,12 +59,12 @@
           <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
             <label>
               <span>Module code</span>
-              <input name="module" value="{{ form_values.get('module', '') }}" placeholder="INF1103" maxlength="32" autocomplete="off" required>
+              <input name="module" placeholder="INF1103" maxlength="32" autocomplete="off" required>
             </label>
 
             <label class="prompt-field">
               <span>Extra context <small>optional when the snapshots are clear</small></span>
-              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: Tutorial 1–10 together form one 5% assessment.">{{ form_values.get('prompt', '') }}</textarea>
+              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: Tutorial 1–10 together form one 5% assessment."></textarea>
             </label>
 
             <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
@@ -134,15 +104,15 @@
         <div class="schedule-heading">
           <div>
             <p class="eyebrow">Extraction review</p>
-            <h2>{{ focus_module or 'Module' }} assessments</h2>
-            <p>The AI fills these fields. Open a card only when an extracted value needs human correction.</p>
+            <h2>{{ module or 'Module' }} assessments</h2>
+            <p>The AI extracts each graded component and comments when a value needs review.</p>
           </div>
-          <span class="review-count">{{ latest_records|length }} current event{% if latest_records|length != 1 %}s{% endif %}</span>
+          <span class="review-count">{{ assessments|length }} assessment{% if assessments|length != 1 %}s{% endif %}</span>
         </div>
 
-        {% if latest_records %}
+        {% if assessments %}
           <div class="assessment-review-grid">
-            {% for record in latest_records %}
+            {% for record in assessments %}
               <article class="review-card status-{{ record.status|lower }}">
                 <div class="review-card-heading">
                   <div>
@@ -159,31 +129,9 @@
 
                 {% if record.issues %}
                   <ul class="record-issues">
-                    {% for issue in record.issues %}<li>{{ issue.feedback }}</li>{% endfor %}
+                    {% for issue in record.issues %}<li>{{ issue }}</li>{% endfor %}
                   </ul>
                 {% endif %}
-
-                <details class="correction-panel" {% if record.status != 'READY' %}open{% endif %}>
-                  <summary>Review or correct extraction</summary>
-                  <form action="{{ url_for('review_assessment', record_id=record.record_id) }}" method="post">
-                    <label>
-                      <span>Assessment</span>
-                      <input name="assessment_type" value="{{ record.assessment_type }}" maxlength="120" required>
-                    </label>
-                    <label>
-                      <span>Deadline</span>
-                      <input name="deadline" value="{{ record.deadline or '' }}" placeholder="Week 3" pattern="Week ([1-9]|[1-4][0-9]|5[0-2])">
-                    </label>
-                    <label>
-                      <span>Weightage</span>
-                      <div class="input-suffix">
-                        <input name="weightage" value="{{ record.weightage if record.weightage is not none else '' }}" type="number" min="0" max="100" step="0.5">
-                        <span>%</span>
-                      </div>
-                    </label>
-                    <button class="secondary-button" type="submit">Save reviewed values</button>
-                  </form>
-                </details>
               </article>
             {% endfor %}
           </div>
@@ -200,7 +148,7 @@
         <div class="schedule-heading">
           <div>
             <p class="eyebrow">Single-module timetable</p>
-            <h2>{{ focus_module or 'Weekly' }} deadline plan</h2>
+            <h2>{{ module or 'Weekly' }} deadline plan</h2>
             <p>A compact week strip. Each coloured row is one assessment block; higher priority sits lower in its week.</p>
           </div>
           <div class="legend" aria-label="Priority colour legend">
@@ -229,7 +177,7 @@
                         </div>
                         <div class="block-meta">
                           <span>{{ block.priority }}</span>
-                          <span>{{ block.assessment_weightage|round(1) }}%</span>
+                          <span>{{ block.weightage|round(1) }}%</span>
                         </div>
                       </article>
                     {% endfor %}
