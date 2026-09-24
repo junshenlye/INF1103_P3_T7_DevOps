@@ -22,21 +22,6 @@
     </header>
 
     <main class="page-shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Academic workload, made visible</p>
-          <h1>Turn module evidence into a schedule you can act on.</h1>
-          <p class="hero-copy">
-            Name the module once, drop its assessment snapshots, and let the AI
-            extract every quiz, assignment, project, and submission it can find.
-          </p>
-        </div>
-        <div class="hero-note">
-          <span>Privacy note</span>
-          Use non-confidential images without personal data on the free AI endpoint.
-        </div>
-      </section>
-
       {% if connection_error %}
         <section class="result-banner is-error" role="alert">
           <div>
@@ -51,15 +36,14 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">Module evidence pack</p>
-              <h2>Extract every assessment</h2>
+              <h1>Build the weekly schedule</h1>
             </div>
-            <span class="step-badge">AI validated</span>
           </div>
 
           <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
             <label>
               <span>Module code</span>
-              <input name="module" placeholder="INF1103" maxlength="32" autocomplete="off" required>
+              <input name="module" placeholder="Module code" maxlength="32" autocomplete="off" required>
             </label>
 
             <label class="prompt-field">
@@ -76,24 +60,16 @@
             </div>
 
             <button class="primary-button" type="submit">
-              <span>Extract assessment events</span>
+              <span>Build schedule</span>
               <span aria-hidden="true">→</span>
             </button>
 
             <section class="progress-panel" id="extraction-progress" aria-live="polite" hidden>
               <div class="progress-heading">
-                <div>
-                  <span class="progress-kicker">Live extraction progress</span>
-                  <strong id="progress-stage">Preparing evidence pack…</strong>
-                </div>
+                <strong id="progress-stage">Preparing evidence pack…</strong>
                 <span id="progress-elapsed">0.0s</span>
               </div>
-              <div class="progress-track" aria-hidden="true">
-                <span id="progress-bar"></span>
-              </div>
               <p id="progress-message">The request is being prepared.</p>
-              <ol id="progress-events" class="progress-events"></ol>
-              <p class="progress-note">Keep this tab open. Free model responses may take a while, but the timer and stages will continue updating.</p>
             </section>
           </form>
         </article>
@@ -160,13 +136,13 @@
               <h2 id="checklist-title">What to add next</h2>
               <p>These items were not placed because a timetable fact was missing or ambiguous. Add the requested material in a later upload.</p>
             </div>
-            <span class="checklist-count">{{ checklist|length }} to review</span>
+            <span class="checklist-count">{{ checklist|length }} missing</span>
           </div>
           <div class="checklist-grid">
             {% for entry in checklist %}
               <article class="checklist-card">
                 <span>Not scheduled</span>
-                <h3>{{ entry.assessment_type }}</h3>
+                <h3>{{ entry.title }}</h3>
                 <ul>
                   {% for item in entry['items'] %}<li>{{ item }}</li>{% endfor %}
                 </ul>

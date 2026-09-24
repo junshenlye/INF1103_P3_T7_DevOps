@@ -10,7 +10,7 @@ timetable. This MVP deliberately analyses one module at a time.
 Input
   -> I/O Manager validates user data
   -> AI Manager extracts structured events (Nemotron, then Dots3 fallback)
-  -> Logic Manager assigns status, priority, and deadline week
+  -> Logic Manager builds the timetable and missing-information checklist
   -> Data Manager saves the finished plan
 Output
 ```
@@ -29,7 +29,7 @@ src/
   data_manager.py     PostgreSQL persistence
   main.py             passes results between managers
 
-helpers/api_server.py thin Docker HTTP adapter and temporary progress files
+helpers/api_server.py thin Docker HTTP adapter
 frontend-demo/        host-run presentation only
 ```
 
@@ -64,20 +64,21 @@ Addresses:
 - PostgreSQL: `127.0.0.1:5433`
 
 PostgreSQL uses Docker `tmpfs`. `docker compose down` clears the current data.
-Uploaded images and extraction progress files are also temporary.
+Uploaded images exist only while one request is being processed.
 
 ## Current proof of concept
 
 1. Enter one module code.
 2. Drop all screenshots for that module into one request.
-3. Watch the extraction route move to Dots3 if Nemotron fails.
+3. Wait while Nemotron extracts the facts or Dots3 takes over automatically.
 4. Receive the read-only Week 1…N timetable.
 5. Use the AI checklist to find evidence missing from unscheduled items.
 
 Deadlines use only `Week N` (for example, `Week 3`). Missing or ambiguous facts
-stay out of the timetable and appear as actionable evidence requests; there is
-no block editor. Multiple events in the same week stack vertically, with higher
-priority lower in the stack.
+do not stop the request. Safe events still appear in the timetable, while
+unclear items become a short checklist; there is no review form or block editor.
+Multiple events in the same week stack vertically, with higher priority lower in
+the stack.
 
 Automated test files are intentionally kept local during this early MVP and are
 ignored by Git to keep the shared repository focused on the handoff code.

@@ -1,4 +1,4 @@
-"""Store the current single-module assessment plan in PostgreSQL."""
+"""Store one finished single-module plan in PostgreSQL."""
 
 import json
 import logging
@@ -9,21 +9,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def initialize_storage():
-    """Create the one table used by the MVP."""
+    """Create one JSON slot for the current plan."""
     try:
         with _connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS assessment_records (
-                        id BIGSERIAL PRIMARY KEY,
-                        module TEXT NOT NULL,
-                        assessment_type TEXT NOT NULL,
-                        deadline SMALLINT,
-                        weightage DOUBLE PRECISION,
-                        priority TEXT,
-                        status TEXT NOT NULL,
-                        issues JSONB NOT NULL
+                    CREATE TABLE IF NOT EXISTS current_plan (
+                        slot BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (slot),
+                        plan JSONB NOT NULL
                     )
                     """
                 )
@@ -45,65 +39,42 @@ def storage_is_ready():
 
 
 def save_plan(plan):
-    """Replace the disposable store with the latest single-module result."""
+    """Replace the single disposable plan."""
     try:
         with _connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute("DELETE FROM assessment_records")
-                for record in plan["assessments"]:
-                    deadline = record["deadline"]
-                    cursor.execute(
-                        """
-                        INSERT INTO assessment_records (
-                            module, assessment_type, deadline, weightage,
-                            priority, status, issues
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-                        """,
-                        (
-                            record["module"],
-                            record["assessment_type"],
-                            int(deadline.split()[1]) if deadline else None,
-                            record["weightage"],
-                            record["priority"],
-                            record["status"],
-                            json.dumps(record["issues"]),
-                        ),
-                    )
+                cursor.execute(
+                    """
+                    INSERT INTO current_plan (slot, plan)
+                    VALUES (TRUE, %s::jsonb)
+                    ON CONFLICT (slot) DO UPDATE SET plan = EXCLUDED.plan
+                    """,
+                    (json.dumps(plan),),
+                )
     except Exception:
         LOGGER.exception("Could not save the assessment plan")
         return False
     return True
 
 
-def load_assessments():
-    """Load the current module assessments in insertion order."""
+def load_plan():
+    """Load the current plan or an empty dashboard."""
     try:
         with _connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT module, assessment_type, deadline, weightage,
-                           priority, status, issues
-                    FROM assessment_records
-                    ORDER BY id
-                    """
-                )
-                rows = cursor.fetchall()
+                cursor.execute("SELECT plan FROM current_plan WHERE slot = TRUE")
+                row = cursor.fetchone()
     except Exception:
         LOGGER.exception("Could not load the assessment plan")
-        return []
-    return [
-        {
-            "module": row[0],
-            "assessment_type": row[1],
-            "deadline": f"Week {row[2]}" if row[2] is not None else None,
-            "weightage": row[3],
-            "priority": row[4],
-            "status": row[5],
-            "issues": row[6],
-        }
-        for row in rows
-    ]
+        return _empty_plan()
+    if row is None:
+        return _empty_plan()
+    return json.loads(row[0]) if isinstance(row[0], str) else row[0]
+
+
+def _empty_plan():
+    """Return the only empty output shape used by the UI."""
+    return {"module": None, "schedule": {"weeks": [], "blocks": []}, "checklist": []}
 
 
 def _connect():

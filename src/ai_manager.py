@@ -15,24 +15,19 @@ PRIMARY_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 BACKUP_MODEL = "dots-studio/dots-3-note-preview:free"
 
 
-def extract_assessments(input_data, api_caller=None, progress_callback=None):
-    """Return every extracted assessment or a short list of errors."""
+def extract_assessments(input_data, api_caller=None):
+    """Return usable assessments plus comments about unclear evidence."""
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if api_caller is None and not api_key:
-        return {"assessments": [], "errors": ["OPENROUTER_API_KEY is missing."]}
+        return {
+            "assessments": [],
+            "comments": ["The AI service is not configured, so no schedule was created."],
+        }
 
     caller = api_caller or _call_openrouter
     models = _model_route()
-    last_error = "The model could not process this evidence."
+    best_result = None
     for attempt, model in enumerate(models, start=1):
-        route_name = "Primary" if attempt == 1 else "Backup"
-        _progress(
-            progress_callback,
-            "ai_request",
-            f"{route_name} vision model is reading the evidence.",
-            attempt=attempt,
-            max_attempts=len(models),
-        )
         try:
             reply = caller(
                 prompt=_build_prompt(input_data),
@@ -41,45 +36,27 @@ def extract_assessments(input_data, api_caller=None, progress_callback=None):
                 model=model,
                 structured_output=attempt > 1,
             )
-            _progress(
-                progress_callback,
-                "ai_validation",
-                f"{route_name} model replied; checking its structured result.",
-                attempt=attempt,
-                max_attempts=len(models),
-            )
             result = _normalize_reply(_parse_reply(reply))
-            if result["assessments"]:
+            if result["assessments"] or result["comments"]:
                 result["model_used"] = model
-                _progress(
-                    progress_callback,
-                    "ai_complete",
-                    f"{route_name} model extracted {len(result['assessments'])} assessment(s).",
-                    attempt=attempt,
-                    max_attempts=len(models),
-                    event_count=len(result["assessments"]),
-                )
-                return result
-            last_error = next(
-                iter(result["errors"]),
-                "The model returned no assessments or explanation.",
-            )
+                if best_result is None or _result_score(result) > _result_score(
+                    best_result
+                ):
+                    best_result = result
+                if _has_complete_weight_set(result["assessments"]):
+                    return result
         except (ConnectionError, OSError, TypeError, ValueError, KeyError) as error:
-            last_error = _safe_error(error)
-            LOGGER.warning("Model route %s failed: %s", model, last_error)
+            LOGGER.warning("Model route %s failed: %s", model, _safe_error(error))
 
-        _progress(
-            progress_callback,
-            "routing_backup" if attempt < len(models) else "failed",
-            (
-                "Primary model failed; routing the same evidence to the backup model."
-                if attempt < len(models)
-                else last_error
-            ),
-            attempt=attempt,
-            max_attempts=len(models),
-        )
-    return {"assessments": [], "errors": [last_error]}
+    if best_result:
+        return best_result
+    return {
+        "assessments": [],
+        "comments": [
+            "The AI services did not return a usable reading of the evidence. "
+            "No timetable blocks were created."
+        ],
+    }
 
 
 def _build_prompt(input_data):
@@ -93,7 +70,11 @@ def _build_prompt(input_data):
         "internships, capstones, portfolios, or practical work.\n"
         "Create one assessment when repeated activities share one collective "
         "weightage. Create separate assessments only when the source gives them "
-        "separate weights or identifies them as independent graded components.\n"
+        "separate weights or identifies them as independent graded components. "
+        "Scan every image and all extra context end-to-end before responding. "
+        "Count the distinct visible weights and make sure every independently "
+        "weighted component appears in the assessments array; do not stop after "
+        "the first component.\n"
         "Use deadline Week N only when one exact module week is stated. For a "
         "range, recurrence, calendar date, conflict, or missing deadline, use "
         "null. Never guess or divide a shared weightage. Use issues only for "
@@ -101,6 +82,12 @@ def _build_prompt(input_data):
         "item explaining what evidence the student should add next. Do not add an "
         "issue when the assessment name, week, grouping, and weight are clear. "
         "Weightage must use percentage points: return 15 for 15%, never 0.15. "
+        "Never reject the whole request because one fact is unclear: return every "
+        "safe assessment and explain uncertain evidence in comments. Never use "
+        "comments to repeat confirmed facts or an assessment's existing issues. "
+        "If nothing is "
+        "readable, comments must say what part of the assessment material is missing "
+        "or illegible. Keep comments short and do not ask the student questions. "
         "Return all visible components, or explain why none can "
         f"be extracted. Extra user context: {context or 'None'}"
     )
@@ -204,10 +191,7 @@ def _extraction_tool():
         "type": "function",
         "function": {
             "name": "submit_assessments",
-            "description": (
-                "Submit every assessment. Put uncertainty in that assessment's "
-                "issues as actionable missing-evidence checklist items."
-            ),
+            "description": "Submit usable assessments and concise evidence comments.",
             "parameters": _extraction_schema(),
         },
     }
@@ -246,13 +230,16 @@ def _extraction_schema():
         "type": "object",
         "properties": {
             "assessments": {"type": "array", "items": assessment},
-            "errors": {
+            "comments": {
                 "type": "array",
-                "description": "Fatal reading errors only; otherwise empty.",
+                "description": (
+                    "Concise explanations of missing, conflicting, or unreadable "
+                    "evidence. Do not ask questions."
+                ),
                 "items": {"type": "string"},
             },
         },
-        "required": ["assessments", "errors"],
+        "required": ["assessments", "comments"],
         "additionalProperties": False,
     }
 
@@ -299,15 +286,20 @@ def _normalize_reply(reply):
     if not isinstance(reply, dict) or not isinstance(reply.get("assessments"), list):
         raise ValueError("The model result did not contain an assessments list.")
 
-    errors = [str(error) for error in reply.get("errors", []) if str(error).strip()]
+    comment_source = reply.get("comments", reply.get("errors", []))
+    comments = [
+        str(comment).strip()
+        for comment in comment_source
+        if str(comment).strip()
+    ] if isinstance(comment_source, list) else []
     assessments = []
     for index, item in enumerate(reply["assessments"]):
         if not isinstance(item, dict):
-            errors.append(f"Assessment {index + 1} was not structured correctly.")
+            comments.append(f"Assessment {index + 1} could not be read clearly.")
             continue
         name = str(item.get("assessment_type") or item.get("name") or "").strip()
         if not name:
-            errors.append(f"Assessment {index + 1} had no name.")
+            comments.append(f"Assessment {index + 1} had no readable name.")
             continue
 
         issues = _issue_text(item.get("issues", []))
@@ -359,7 +351,7 @@ def _normalize_reply(reply):
             }
         )
     _convert_fractional_weight_set(assessments)
-    return {"assessments": assessments, "errors": errors}
+    return {"assessments": assessments, "comments": comments}
 
 
 def _convert_fractional_weight_set(assessments):
@@ -374,6 +366,29 @@ def _convert_fractional_weight_set(assessments):
             if assessment["weightage"] is not None:
                 assessment["weightage"] = round(assessment["weightage"] * 100, 4)
         LOGGER.info("Converted fractional model weights to percentage points")
+
+
+def _has_complete_weight_set(assessments):
+    """Recognise a complete module without knowing its assessment types."""
+    weights = [
+        assessment["weightage"]
+        for assessment in assessments
+        if assessment.get("weightage") is not None
+    ]
+    return bool(weights) and 99.5 <= sum(weights) <= 100.5
+
+
+def _result_score(result):
+    """Prefer the route that recovered more usable timetable facts."""
+    assessments = result["assessments"]
+    known_facts = sum(
+        assessment.get("deadline") is not None
+        for assessment in assessments
+    ) + sum(
+        assessment.get("weightage") is not None
+        for assessment in assessments
+    )
+    return len(assessments), known_facts
 
 
 def _issue_text(issues):
@@ -405,12 +420,3 @@ def _safe_error(error):
     if isinstance(error, OSError):
         return "An uploaded image could not be read."
     return str(error) or "The model response could not be processed."
-
-
-def _progress(callback, stage, message, **details):
-    """Send optional progress without coupling the manager to Flask."""
-    if callback:
-        try:
-            callback({"stage": stage, "message": message, **details})
-        except Exception:
-            LOGGER.warning("Progress callback failed and was ignored")

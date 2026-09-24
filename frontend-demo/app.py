@@ -21,10 +21,8 @@ def load_dashboard(api_url):
     except (OSError, ValueError, json.JSONDecodeError, url_error.HTTPError):
         return {
             "module": None,
-            "assessments": [],
             "checklist": [],
-            "records_loaded": 0,
-            "schedule": {"blocks": [], "weeks": [], "warnings": []},
+            "schedule": {"blocks": [], "weeks": []},
         }, f"Docker API is unavailable at {api_url}."
 
 

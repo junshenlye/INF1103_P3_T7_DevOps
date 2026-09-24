@@ -1,43 +1,40 @@
 """Convert extracted assessments into a single-module weekly plan."""
 
 
-def build_plan(module, assessments):
-    """Add deterministic status and priority, then build week columns."""
-    records = []
+def build_plan(module, assessments, comments=None):
+    """Build schedulable blocks and one concise missing-information list."""
+    blocks = []
+    checklist = []
+
     for assessment in assessments:
         issues = list(assessment.get("issues", []))
-        ready = (
-            assessment.get("deadline") is not None
-            and assessment.get("weightage") is not None
-            and not issues
-        )
-        records.append(
+        if assessment.get("deadline") is None and not any(
+            "deadline" in issue.lower() for issue in issues
+        ):
+            issues.append("The deadline week is missing.")
+        if assessment.get("weightage") is None and not any(
+            "weight" in issue.lower() for issue in issues
+        ):
+            issues.append("The assessment weight is missing.")
+
+        if issues:
+            checklist.append(
+                {"title": assessment["assessment_type"], "items": issues}
+            )
+            continue
+
+        blocks.append(
             {
-                "module": module,
                 "assessment_type": assessment["assessment_type"],
-                "deadline": assessment.get("deadline"),
-                "weightage": assessment.get("weightage"),
-                "priority": (
-                    _priority(assessment["deadline"], assessment["weightage"])
-                    if ready
-                    else None
+                "deadline": assessment["deadline"],
+                "week_number": int(assessment["deadline"].split()[1]),
+                "weightage": assessment["weightage"],
+                "priority": _priority(
+                    assessment["deadline"], assessment["weightage"]
                 ),
-                "status": "READY" if ready else "REVIEW",
-                "issues": issues,
             }
         )
 
-    blocks = [
-        {
-            "assessment_type": record["assessment_type"],
-            "deadline": record["deadline"],
-            "week_number": int(record["deadline"].split()[1]),
-            "priority": record["priority"],
-            "weightage": record["weightage"],
-        }
-        for record in records
-        if record["status"] == "READY"
-    ]
     blocks.sort(
         key=lambda block: (
             block["week_number"],
@@ -54,23 +51,29 @@ def build_plan(module, assessments):
         }
         for week in range(1, final_week + 1)
     ]
-    checklist = [
-        {
-            "assessment_type": record["assessment_type"],
-            "items": record["issues"],
-        }
-        for record in records
-        if record["status"] == "REVIEW"
+    known_weights = [
+        assessment["weightage"]
+        for assessment in assessments
+        if assessment.get("weightage") is not None
     ]
+    total_weight = sum(known_weights)
+    if known_weights and not 99.5 <= total_weight <= 100.5:
+        checklist.append(
+            {
+                "title": "Module coverage",
+                "items": [
+                    f"Visible assessment weights total {total_weight:g}%, not 100%. "
+                    "Add the missing assessment information."
+                ],
+            }
+        )
+    if comments and not checklist:
+        checklist.append({"title": "Evidence summary", "items": list(comments)})
+
     return {
         "module": module,
-        "assessments": records,
         "checklist": checklist,
-        "schedule": {
-            "weeks": weeks,
-            "blocks": blocks,
-            "warnings": [],
-        },
+        "schedule": {"weeks": weeks, "blocks": blocks},
     }
 
 
