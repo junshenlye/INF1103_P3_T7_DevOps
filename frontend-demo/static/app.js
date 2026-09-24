@@ -19,13 +19,12 @@ const stageLabels = {
   queued: "Queued",
   starting: "Starting extraction",
   validating: "Validating evidence",
-  module_context: "Saving module context",
-  ai_request: "Nemotron is reading the evidence",
-  ai_validation: "Validating Nemotron response",
-  retrying: "Retrying model extraction",
+  ai_request: "Vision model is reading the evidence",
+  ai_validation: "Validating model response",
+  routing_backup: "Routing to backup model",
   ai_complete: "AI extraction validated",
-  building_records: "Building assessment records",
-  scheduling: "Recalculating global schedule",
+  planning: "Building weekly plan",
+  saving: "Saving module plan",
   complete: "Extraction complete",
   failed: "Extraction stopped",
 };
@@ -34,13 +33,12 @@ const stageProgress = {
   queued: 5,
   starting: 10,
   validating: 16,
-  module_context: 24,
   ai_request: 42,
-  retrying: 48,
+  routing_backup: 48,
   ai_validation: 62,
   ai_complete: 72,
-  building_records: 80,
-  scheduling: 90,
+  planning: 82,
+  saving: 92,
   complete: 100,
   failed: 100,
 };
@@ -151,9 +149,7 @@ async function pollExtraction(statusUrl) {
     }
     renderProgress(job);
     if (job.status === "complete") {
-      const module = job.result?.source_module;
-      const nextPage = module ? `/?module=${encodeURIComponent(module)}` : "/";
-      window.setTimeout(() => window.location.assign(nextPage), 900);
+      window.setTimeout(() => window.location.assign("/"), 900);
       return;
     }
     if (job.status === "failed") {

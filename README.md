@@ -1,19 +1,17 @@
 # Stackplan MVP
 
 Stackplan reads one module's assessment screenshots, extracts every visible
-assessment, and turns valid events into a compact weekly preparation timetable.
-
-The current milestone deliberately handles one module at a time. Multi-module
-competition is the next iteration.
+assessment, and places valid events into a compact Week 1, Week 2, Week 3…
+timetable. This MVP deliberately analyses one module at a time.
 
 ## Procedural flow
 
 ```text
 Input
   -> I/O Manager validates user data
-  -> AI Manager extracts structured events
-  -> Logic Manager assigns status, priority, and preparation dates
-  -> Data Manager validates and saves the finished records
+  -> AI Manager extracts structured events (Nemotron, then Dots3 fallback)
+  -> Logic Manager assigns status, priority, and deadline week
+  -> Data Manager saves the finished plan
 Output
 ```
 
@@ -25,19 +23,19 @@ application state at module level.
 
 ```text
 src/
-  io_manager.py       input/output and record validation
-  ai_manager.py       Nemotron/OpenRouter extraction
+  io_manager.py       request validation
+  ai_manager.py       Nemotron/Dots3 extraction through OpenRouter
   logic_manager.py    deterministic status and timetable rules
-  data_manager.py     JSON/PostgreSQL persistence and history
-  main.py             passes results between managers; CLI entry point
+  data_manager.py     PostgreSQL persistence
+  main.py             passes results between managers
 
 helpers/api_server.py thin Docker HTTP adapter and temporary progress files
 frontend-demo/        host-run presentation only
 ```
 
-`data_manager.py` uses PostgreSQL when Docker supplies `DATABASE_URL`. The CLI
-continues to use JSON, so the graded procedural core does not require Docker.
-Those local JSON files are created under the Git-ignored `data/` directory.
+The core has one clear step per manager and one PostgreSQL table containing only
+the latest single-module plan. It deliberately has no CLI mode, JSON
+fallback, revision history, correction workflow, or multi-module selection.
 
 ## Run
 
@@ -70,14 +68,16 @@ Uploaded images and extraction progress files are also temporary.
 
 ## Current proof of concept
 
-1. Enter one module code and its credits.
+1. Enter one module code.
 2. Drop all screenshots for that module into one request.
-3. Watch the extraction stages and bounded AI retries.
-4. Review the extracted assessments.
-5. See READY events as small coloured blocks in a weekly strip.
+3. Watch the extraction route move to Dots3 if Nemotron fails.
+4. Receive the read-only Week 1…N timetable.
+5. Use the AI checklist to find evidence missing from unscheduled items.
 
-Missing deadlines or weights remain visible for correction but stay out of the
-timetable. The saved record shape remains the frozen assignment contract.
+Deadlines use only `Week N` (for example, `Week 3`). Missing or ambiguous facts
+stay out of the timetable and appear as actionable evidence requests; there is
+no block editor. Multiple events in the same week stack vertically, with higher
+priority lower in the stack.
 
 Automated test files are intentionally kept local during this early MVP and are
 ignored by Git to keep the shared repository focused on the handoff code.
