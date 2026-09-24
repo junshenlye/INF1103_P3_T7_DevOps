@@ -13,6 +13,7 @@ from . import ai_manager, contracts, data_manager, io_manager, logic_manager
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_FILE = PROJECT_ROOT / "data" / "schedules.json"
+DEFAULT_MODULE_FILE = PROJECT_ROOT / "data" / "modules.json"
 
 
 def resolve_data_file_path(configured_path: Optional[str] = None) -> str:
@@ -27,26 +28,48 @@ def resolve_data_file_path(configured_path: Optional[str] = None) -> str:
     return str(path)
 
 
+def resolve_module_file_path(configured_path: Optional[str] = None) -> str:
+    """Resolve the separate module-credit metadata file path."""
+    raw_path = configured_path or os.getenv("MODULE_FILE")
+    if not raw_path:
+        return str(DEFAULT_MODULE_FILE)
+
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path)
+
+
 def start_application(
     data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
     today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Load local configuration and existing records without starting a UI loop."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
     records = data_manager.load_records(resolved_data_file)
+    module_profiles = data_manager.load_module_profiles(resolved_module_file)
     latest = data_manager.latest_records(records)
     return {
         "records": records,
         "records_loaded": len(records),
         "data_file": resolved_data_file,
-        "schedule": logic_manager.build_schedule(latest, today=today),
+        "module_profiles": module_profiles,
+        "module_file": resolved_module_file,
+        "schedule": logic_manager.build_schedule(
+            latest,
+            today=today,
+            module_profiles=module_profiles,
+        ),
     }
 
 
 def process_assessment(
     input_record: Dict[str, Any],
     data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
     api_caller: Optional[Callable[..., str]] = None,
     today: Optional[date] = None,
     record_id: Optional[str] = None,
@@ -63,6 +86,20 @@ def process_assessment(
         }
 
     resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
+    module_credits = input_record.get("module_credits")
+    if module_credits is not None and not data_manager.save_module_profile(
+        input_record["module"],
+        module_credits,
+        resolved_module_file,
+    ):
+        return {
+            "ok": False,
+            "record": None,
+            "errors": ["Module credit metadata could not be saved."],
+            "ai_attempts": 0,
+            "preserved": False,
+        }
     existing_records = data_manager.load_records(resolved_data_file)
     resolved_record_id = (
         record_id
@@ -98,7 +135,11 @@ def process_assessment(
                 "ai_attempts": ai_result["attempts"],
                 "preserved": False,
             }
-        schedule = build_current_schedule(resolved_data_file, today=today)
+        schedule = build_current_schedule(
+            resolved_data_file,
+            today=today,
+            module_file=resolved_module_file,
+        )
         return {
             "ok": False,
             "record": recoverable_record,
@@ -132,7 +173,11 @@ def process_assessment(
             "ai_attempts": ai_result["attempts"],
         }
 
-    schedule = build_current_schedule(resolved_data_file, today=today)
+    schedule = build_current_schedule(
+        resolved_data_file,
+        today=today,
+        module_file=resolved_module_file,
+    )
     return {
         "ok": True,
         "record": final_record,
@@ -146,17 +191,26 @@ def process_assessment(
 def build_current_schedule(
     data_file: str,
     today: Optional[date] = None,
+    module_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a schedule from only the latest persisted record revisions."""
     records = data_manager.load_records(data_file)
     latest = data_manager.latest_records(records)
-    return logic_manager.build_schedule(latest, today=today)
+    module_profiles = data_manager.load_module_profiles(
+        resolve_module_file_path(module_file)
+    )
+    return logic_manager.build_schedule(
+        latest,
+        today=today,
+        module_profiles=module_profiles,
+    )
 
 
 def reprocess_assessment(
     record_id: str,
     updates: Dict[str, Any],
     data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
     api_caller: Optional[Callable[..., str]] = None,
     today: Optional[date] = None,
 ) -> Dict[str, Any]:
@@ -182,6 +236,7 @@ def reprocess_assessment(
         }
 
     resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
     records = data_manager.load_records(resolved_data_file)
     latest = data_manager.get_latest_record(records, record_id)
     if latest is None:
@@ -202,12 +257,17 @@ def reprocess_assessment(
         "prompt": "",
         "image_paths": [],
     }
+    module_profiles = data_manager.load_module_profiles(resolved_module_file)
+    module_profile = module_profiles.get(latest["module"].strip().upper())
+    if module_profile is not None:
+        merged_input["module_credits"] = module_profile["credits"]
     for field in io_manager.ASSESSMENT_INPUT_FIELDS - {"record_id"}:
         if field in updates and updates[field] not in (None, "", []):
             merged_input[field] = updates[field]
     return process_assessment(
         merged_input,
         data_file=resolved_data_file,
+        module_file=resolved_module_file,
         api_caller=api_caller,
         today=today,
         record_id=record_id,
@@ -217,17 +277,23 @@ def reprocess_assessment(
 def process_batch(
     input_records: List[Any],
     data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
     api_caller: Optional[Callable[..., str]] = None,
     today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Process multiple isolated assessments and return one combined schedule."""
     resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
     if not isinstance(input_records, list) or not input_records:
         return {
             "ok": False,
             "results": [],
             "saved_count": 0,
-            "schedule": build_current_schedule(resolved_data_file, today=today),
+            "schedule": build_current_schedule(
+                resolved_data_file,
+                today=today,
+                module_file=resolved_module_file,
+            ),
             "errors": ["Batch input must be a non-empty list."],
         }
     if len(input_records) > io_manager.MAX_BATCH_RECORDS:
@@ -235,7 +301,11 @@ def process_batch(
             "ok": False,
             "results": [],
             "saved_count": 0,
-            "schedule": build_current_schedule(resolved_data_file, today=today),
+            "schedule": build_current_schedule(
+                resolved_data_file,
+                today=today,
+                module_file=resolved_module_file,
+            ),
             "errors": [
                 f"Batch input may contain at most {io_manager.MAX_BATCH_RECORDS} "
                 "records."
@@ -263,6 +333,7 @@ def process_batch(
                 record_id,
                 input_record,
                 data_file=resolved_data_file,
+                module_file=resolved_module_file,
                 api_caller=api_caller,
                 today=today,
             )
@@ -270,13 +341,18 @@ def process_batch(
             result = process_assessment(
                 input_record,
                 data_file=resolved_data_file,
+                module_file=resolved_module_file,
                 api_caller=api_caller,
                 today=today,
                 record_id=record_id,
             )
         results.append(result)
 
-    schedule = build_current_schedule(resolved_data_file, today=today)
+    schedule = build_current_schedule(
+        resolved_data_file,
+        today=today,
+        module_file=resolved_module_file,
+    )
     return {
         "ok": all(result["ok"] for result in results),
         "results": results,

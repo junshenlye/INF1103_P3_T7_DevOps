@@ -140,11 +140,18 @@ def test_schedule_builds_multiple_blocks_and_excludes_incomplete_record():
     schedule = logic_manager.build_schedule(records, today=date(2026, 10, 1))
 
     assert [block["record_id"] for block in schedule["blocks"]] == [
-        "record-high",
         "record-medium",
+        "record-high",
     ]
-    assert schedule["blocks"][0]["block_size_days"] == 5
-    assert schedule["blocks"][0]["revision"] == 2
+    high_block = schedule["blocks"][1]
+    assert high_block["block_size_days"] == 5
+    assert high_block["revision"] == 2
+    assert schedule["blocks"][0]["stack_index"] == 0
+    assert high_block["stack_index"] == 1
+    assert [block["priority"] for block in schedule["weeks"][0]["blocks"]] == [
+        "MEDIUM",
+        "HIGH",
+    ]
     assert schedule["excluded_records"][0]["record_id"] == "record-incomplete"
     assert any("overlap" in warning for warning in schedule["warnings"])
 
@@ -166,3 +173,31 @@ def test_assessment_due_today_is_constrained():
 
     assert record["status"] == "CONSTRAINED"
     assert record["priority"] is None
+
+
+def test_module_credits_raise_credit_weighted_schedule_priority():
+    record = {
+        "record_id": "credit-heavy",
+        "module": "INF1103",
+        "assessment_type": "Project",
+        "deadline": "2026-10-12",
+        "weightage": 30,
+        "priority": "MEDIUM",
+        "status": "READY",
+        "missing_fields": [],
+        "issues": [],
+        "revision": 1,
+    }
+
+    schedule = logic_manager.build_schedule(
+        [record],
+        today=date(2026, 10, 1),
+        module_profiles={"INF1103": {"credits": 12}},
+    )
+
+    block = schedule["blocks"][0]
+    assert block["record_priority"] == "MEDIUM"
+    assert block["priority"] == "HIGH"
+    assert block["module_credits"] == 12
+    assert block["credit_weighted_load"] == 3.6
+    assert block["effective_weightage"] == 60

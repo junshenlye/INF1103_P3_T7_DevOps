@@ -117,3 +117,28 @@ def test_duplicate_record_revision_is_rejected(tmp_path):
     assert data_manager.save_record_revision(record, str(data_file)) is True
     assert data_manager.save_record_revision(record, str(data_file)) is False
     assert data_manager.load_records(str(data_file)) == [record]
+
+
+def test_module_profiles_are_separate_private_metadata(tmp_path):
+    module_file = tmp_path / "modules.json"
+
+    assert data_manager.save_module_profile(
+        "inf1103",
+        12,
+        str(module_file),
+    ) is True
+
+    assert data_manager.load_module_profiles(str(module_file)) == {
+        "INF1103": {"credits": 12.0}
+    }
+    assert stat.S_IMODE(module_file.stat().st_mode) == 0o600
+
+
+def test_corrupt_module_profiles_are_not_overwritten(tmp_path):
+    module_file = tmp_path / "modules.json"
+    module_file.write_text("not-json", encoding="utf-8")
+
+    saved = data_manager.save_module_profile("INF1103", 6, str(module_file))
+
+    assert saved is False
+    assert module_file.read_text(encoding="utf-8") == "not-json"

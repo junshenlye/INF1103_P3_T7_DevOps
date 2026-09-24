@@ -14,6 +14,7 @@ o What information or data will users provide to the system?
 Users provide:
 
 Assessment details: module, assessment type, weightage, and deadline.
+Module context: module credits, used to calculate credit-weighted workload.
 Study preferences: personalized rules for prioritization, such as additional revision time before quizzes or buffer periods before final exams.
 
 These inputs allow the system to generate a priority timeline tailored to each student’s workload and study habits.
@@ -142,6 +143,7 @@ Process one assessment using prompt fields and an optional image:
 ```sh
 python -m src.main \
   --module UCS1001 \
+  --module-credits 6 \
   --assessment-type "Reader Response Essay" \
   --deadline 2026-10-15 \
   --weightage 30 \
@@ -171,6 +173,15 @@ warning.
 The example intentionally contains three exact deadlines and one image whose
 deadline is only a teaching week, demonstrating a usable three-block partial
 schedule while preserving the incomplete record.
+
+Module credits are stored separately in `data/modules.json`, so the frozen
+assessment record contract remains unchanged. Schedule priority uses a
+credit-weighted effective weightage normalized against a six-credit module:
+
+```text
+credit load = assessment weightage × module credits / 100
+effective weightage = assessment weightage × module credits / 6
+```
 
 Schedule blocks are derived rather than added to the frozen record contract.
 The current deliberately simple preparation rule is five days for `HIGH`, three
@@ -231,6 +242,22 @@ docker compose run --rm app \
   --prompt "Process this assessment."
 ```
 
-No port is exposed in the core Docker milestone because this checkpoint remains
-a CLI application. The later demo frontend will call these same procedural
-functions rather than duplicating scheduling rules.
+The `web` service exposes the thin frontend on http://127.0.0.1:5050/. The `app`
+service remains the same independent CLI entry point.
+
+## Run the drag-and-drop frontend
+
+Outside Docker:
+
+```sh
+python frontend-demo/app.py
+```
+
+Open http://127.0.0.1:5000/. Uploaded images are temporary and deleted after
+each AI request. The page sends module details, credits, the context prompt, and
+image paths into `src.main.process_assessment()` and renders its returned
+schedule. It does not duplicate business rules.
+
+Schedule columns run horizontally by calendar week. Blocks sharing a week are
+stacked vertically from LOW at the top to HIGH at the bottom and use teal,
+amber, and coral priority colours.

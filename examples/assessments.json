@@ -1,6 +1,7 @@
 [
   {
     "module": "UCS1001",
+    "module_credits": 6,
     "assessment_type": "Reader Response Essay",
     "deadline": null,
     "weightage": 30,
@@ -9,6 +10,7 @@
   },
   {
     "module": "INF1102",
+    "module_credits": 6,
     "assessment_type": "Project",
     "deadline": "2026-10-23",
     "weightage": 25,
@@ -17,6 +19,7 @@
   },
   {
     "module": "INF1104",
+    "module_credits": 6,
     "assessment_type": "Quiz 1",
     "deadline": "2026-10-08",
     "weightage": 15,
@@ -25,6 +28,7 @@
   },
   {
     "module": "INF1103",
+    "module_credits": 6,
     "assessment_type": "Procedural Project",
     "deadline": "2026-10-12",
     "weightage": 30,

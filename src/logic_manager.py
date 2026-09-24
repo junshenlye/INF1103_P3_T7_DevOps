@@ -9,10 +9,11 @@ PREPARATION_DAYS = {
     "MEDIUM": 3,
     "LOW": 2,
 }
-PRIORITY_ORDER = {
-    "HIGH": 0,
+BASELINE_MODULE_CREDITS = 6
+STACK_ORDER = {
+    "LOW": 0,
     "MEDIUM": 1,
-    "LOW": 2,
+    "HIGH": 2,
 }
 
 
@@ -144,9 +145,11 @@ def build_recoverable_record(
 def build_schedule(
     records: List[Dict[str, Any]],
     today: Optional[date] = None,
+    module_profiles: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     """Build deterministic preparation blocks from the latest READY records."""
     reference_date = today or date.today()
+    profiles = module_profiles or {}
     blocks = []
     excluded_records = []
     warnings = []
@@ -178,7 +181,29 @@ def build_schedule(
             )
             continue
 
-        requested_days = PREPARATION_DAYS[record["priority"]]
+        module_profile = profiles.get(record["module"].strip().upper(), {})
+        module_credits = module_profile.get("credits")
+        schedule_priority = record["priority"]
+        effective_weightage = record["weightage"]
+        credit_weighted_load = None
+        if module_credits is not None:
+            credit_weighted_load = round(
+                record["weightage"] * module_credits / 100,
+                2,
+            )
+            effective_weightage = min(
+                100,
+                record["weightage"]
+                * module_credits
+                / BASELINE_MODULE_CREDITS,
+            )
+            schedule_priority = calculate_priority(
+                record["deadline"],
+                effective_weightage,
+                today=reference_date,
+            )
+
+        requested_days = PREPARATION_DAYS[schedule_priority]
         preparation_start = preparation_end - timedelta(days=requested_days - 1)
         if preparation_start < reference_date:
             preparation_start = reference_date
@@ -188,6 +213,7 @@ def build_schedule(
             )
 
         actual_days = (preparation_end - preparation_start).days + 1
+        week_start = deadline - timedelta(days=deadline.weekday())
         blocks.append(
             {
                 "record_id": record["record_id"],
@@ -198,17 +224,26 @@ def build_schedule(
                 "start_date": preparation_start.isoformat(),
                 "end_date": preparation_end.isoformat(),
                 "block_size_days": actual_days,
-                "priority": record["priority"],
+                "priority": schedule_priority,
+                "record_priority": record["priority"],
+                "assessment_weightage": record["weightage"],
+                "module_credits": module_credits,
+                "credit_weighted_load": credit_weighted_load,
+                "effective_weightage": round(effective_weightage, 2),
+                "week_start": week_start.isoformat(),
+                "week_end": (week_start + timedelta(days=6)).isoformat(),
             }
         )
 
     blocks.sort(
         key=lambda block: (
+            block["week_start"],
+            STACK_ORDER[block["priority"]],
             block["deadline"],
-            PRIORITY_ORDER[block["priority"]],
             block["record_id"],
         )
     )
+    _assign_stack_positions(blocks)
     if _has_overlapping_blocks(blocks):
         warnings.append(
             "Some preparation blocks overlap and should be displayed as "
@@ -222,9 +257,43 @@ def build_schedule(
 
     return {
         "blocks": blocks,
+        "weeks": _build_week_columns(blocks),
         "excluded_records": excluded_records,
         "warnings": warnings,
     }
+
+
+def _assign_stack_positions(blocks: List[Dict[str, Any]]) -> None:
+    """Assign low-to-high vertical positions so HIGH sits at the bottom."""
+    week_counts = {}
+    for block in blocks:
+        week_start = block["week_start"]
+        block["stack_index"] = week_counts.get(week_start, 0)
+        week_counts[week_start] = block["stack_index"] + 1
+
+
+def _build_week_columns(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build bounded horizontal columns for weeks containing schedule blocks."""
+    if not blocks:
+        return []
+
+    weeks = []
+    week_starts = sorted(
+        {date.fromisoformat(block["week_start"]) for block in blocks}
+    )
+    for week_start in week_starts:
+        week_key = week_start.isoformat()
+        weeks.append(
+            {
+                "week_start": week_key,
+                "week_end": (week_start + timedelta(days=6)).isoformat(),
+                "label": week_start.strftime("Week of %d %b"),
+                "blocks": [
+                    block for block in blocks if block["week_start"] == week_key
+                ],
+            }
+        )
+    return weeks
 
 
 def _has_overlapping_blocks(blocks: List[Dict[str, Any]]) -> bool:

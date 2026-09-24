@@ -3,13 +3,220 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Academic Planner</title>
+    <meta name="description" content="AI-assisted academic workload planner">
+    <title>Stackplan — Academic workload planner</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   </head>
   <body>
-    <main>
-      <h1>Academic Planner</h1>
-      <p>A starting point for your assessment timeline frontend.</p>
+    <header class="site-header">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="Stackplan home">
+        <span class="brand-mark">S</span>
+        <span>Stackplan</span>
+      </a>
+      <div class="header-status">
+        <span class="status-dot" aria-hidden="true"></span>
+        {{ records_loaded }} saved revision{% if records_loaded != 1 %}s{% endif %}
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Academic workload, made visible</p>
+          <h1>Turn module evidence into a schedule you can act on.</h1>
+          <p class="hero-copy">
+            Drop screenshots, add context, and let the procedural core validate
+            each assessment before it reaches your weekly plan.
+          </p>
+        </div>
+        <div class="hero-note">
+          <span>Privacy note</span>
+          Use non-confidential images without personal data on the free AI endpoint.
+        </div>
+      </section>
+
+      {% if result %}
+        <section class="result-banner {% if result.ok %}is-success{% elif result.preserved %}is-warning{% else %}is-error{% endif %}" role="status">
+          <div>
+            <strong>
+              {% if result.ok %}
+                Assessment processed
+              {% elif result.preserved %}
+                Input preserved for review
+              {% else %}
+                Assessment needs attention
+              {% endif %}
+            </strong>
+            {% if result.record %}
+              <span>{{ result.record.module }} · {{ result.record.assessment_type }} · {{ result.record.status }}</span>
+            {% endif %}
+          </div>
+          {% if result.errors %}
+            <ul>
+              {% for error in result.errors %}<li>{{ error }}</li>{% endfor %}
+            </ul>
+          {% endif %}
+        </section>
+      {% endif %}
+
+      <section class="workspace-grid">
+        <article class="panel input-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">New assessment</p>
+              <h2>Add evidence and context</h2>
+            </div>
+            <span class="step-badge">AI validated</span>
+          </div>
+
+          <form action="{{ url_for('process_assessment') }}" method="post" enctype="multipart/form-data" id="assessment-form">
+            <div class="field-grid">
+              <label>
+                <span>Module code</span>
+                <input name="module" value="{{ form_values.get('module', '') }}" placeholder="INF1103" maxlength="32" autocomplete="off" required>
+              </label>
+              <label>
+                <span>Module credits</span>
+                <input name="module_credits" value="{{ form_values.get('module_credits', '') }}" type="number" min="0.5" max="60" step="0.5" placeholder="6" required>
+              </label>
+              <label>
+                <span>Assessment</span>
+                <input name="assessment_type" value="{{ form_values.get('assessment_type', '') }}" placeholder="Procedural Project" maxlength="120" required>
+              </label>
+              <label>
+                <span>Assessment weightage</span>
+                <div class="input-suffix">
+                  <input name="weightage" value="{{ form_values.get('weightage', '') }}" type="number" min="0" max="100" step="0.5" placeholder="30">
+                  <span>%</span>
+                </div>
+              </label>
+              <label class="span-two">
+                <span>Exact deadline <small>optional when the source is unclear</small></span>
+                <input name="deadline" value="{{ form_values.get('deadline', '') }}" type="date">
+              </label>
+            </div>
+
+            <label class="prompt-field">
+              <span>Context prompt</span>
+              <textarea name="prompt" rows="4" maxlength="4000" placeholder="Tell the AI what the screenshot represents, or clarify a date that the source only describes as a teaching week.">{{ form_values.get('prompt', '') }}</textarea>
+            </label>
+
+            <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
+              <input id="source-files" name="source_files" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+              <div class="drop-icon" aria-hidden="true">↥</div>
+              <strong>Drop module screenshots here</strong>
+              <span>or click to browse · PNG, JPEG, WEBP, GIF · 10 MB each</span>
+              <div id="file-list" class="file-list" aria-live="polite"></div>
+            </div>
+
+            <button class="primary-button" type="submit">
+              <span>Process assessment</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
+        </article>
+
+        <aside class="panel module-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Credit context</p>
+              <h2>Tracked modules</h2>
+            </div>
+          </div>
+          <p class="panel-copy">
+            Credit-weighted load is assessment weightage × module credits. It can
+            raise a block's schedule priority without changing the saved record contract.
+          </p>
+          <div class="module-list">
+            {% if module_profiles %}
+              {% for module, profile in module_profiles|dictsort %}
+                <div class="module-row">
+                  <span class="module-code">{{ module }}</span>
+                  <span>{{ profile.credits|round(1) }} credits</span>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="empty-compact">Add your first assessment to track module credits.</div>
+            {% endif %}
+          </div>
+          <div class="formula-card">
+            <span>Example</span>
+            <strong>30% × 6 credits = 1.8 load</strong>
+            <small>Priority is normalized against a six-credit module.</small>
+          </div>
+        </aside>
+      </section>
+
+      <section class="schedule-section">
+        <div class="schedule-heading">
+          <div>
+            <p class="eyebrow">Rolling schedule</p>
+            <h2>Weekly preparation blocks</h2>
+            <p>Weeks run horizontally. Blocks in the same week stack vertically, with the highest priority anchored at the bottom.</p>
+          </div>
+          <div class="legend" aria-label="Priority colour legend">
+            <span><i class="legend-dot low"></i>Low</span>
+            <span><i class="legend-dot medium"></i>Medium</span>
+            <span><i class="legend-dot high"></i>High</span>
+          </div>
+        </div>
+
+        {% if schedule.weeks %}
+          <div class="timeline-scroll">
+            <div class="weekly-grid" style="--week-count: {{ schedule.weeks|length }}">
+              {% for week in schedule.weeks %}
+                <article class="week-column">
+                  <header>
+                    <span>{{ week.label }}</span>
+                    <small>{{ week.week_start[5:] }} — {{ week.week_end[5:] }}</small>
+                  </header>
+                  <div class="week-stack">
+                    {% if not week.blocks %}
+                      <div class="empty-week">Open capacity</div>
+                    {% endif %}
+                    {% for block in week.blocks %}
+                      <article class="schedule-block priority-{{ block.priority|lower }}" data-priority="{{ block.priority }}">
+                        <div class="block-topline">
+                          <span class="priority-label">{{ block.priority }}</span>
+                          <span>Rev {{ block.revision }}</span>
+                        </div>
+                        <strong>{{ block.module }}</strong>
+                        <span class="assessment-name">{{ block.assessment_type }}</span>
+                        <dl>
+                          <div><dt>Due</dt><dd>{{ block.deadline }}</dd></div>
+                          <div><dt>Prep</dt><dd>{{ block.start_date[5:] }} → {{ block.end_date[5:] }}</dd></div>
+                          {% if block.module_credits is not none %}
+                            <div><dt>Credit load</dt><dd>{{ block.credit_weighted_load|round(2) }}</dd></div>
+                          {% endif %}
+                        </dl>
+                      </article>
+                    {% endfor %}
+                  </div>
+                </article>
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <div class="empty-schedule">
+            <span>01</span>
+            <h3>Your schedule will appear here</h3>
+            <p>Add a complete assessment with a future deadline to create the first preparation block.</p>
+          </div>
+        {% endif %}
+
+        {% if schedule.warnings %}
+          <div class="warning-list">
+            {% for warning in schedule.warnings %}<p>{{ warning }}</p>{% endfor %}
+          </div>
+        {% endif %}
+      </section>
     </main>
+
+    <footer>
+      <span>Procedural core · AI-validated JSON · Local revision history</span>
+      <a href="{{ url_for('schedule_api') }}">Schedule JSON</a>
+    </footer>
   </body>
 </html>

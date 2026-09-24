@@ -17,7 +17,10 @@ def test_compose_mounts_persistent_data_and_injects_env_file():
 
     assert "./data:/app/data" in compose
     assert "DATA_FILE: /app/data/schedules.json" in compose
+    assert "MODULE_FILE: /app/data/modules.json" in compose
     assert "- .env" in compose
+    assert '"${WEB_PORT:-5050}:5000"' in compose
+    assert "frontend-demo/app.py" in compose
 
 
 def test_docker_context_excludes_local_secrets_and_tooling():

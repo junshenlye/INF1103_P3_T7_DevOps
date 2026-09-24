@@ -101,3 +101,41 @@ def test_cli_routes_batch_file_to_multi_record_pipeline(tmp_path, monkeypatch, c
     assert exit_code == 0
     assert calls[0][0][0]["module"] == "INF1103"
     assert "Processed 0 assessment record(s)." in capsys.readouterr().out
+
+
+def test_module_credits_are_saved_and_affect_derived_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "load_dotenv", lambda *args, **kwargs: False)
+    data_file = tmp_path / "schedules.json"
+    module_file = tmp_path / "modules.json"
+
+    result = main.process_assessment(
+        {
+            "module": "INF1103",
+            "module_credits": 12,
+            "assessment_type": "Project",
+            "deadline": "2026-10-12",
+            "weightage": 30,
+            "prompt": "Use the supplied assessment details.",
+            "image_paths": [],
+        },
+        data_file=str(data_file),
+        module_file=str(module_file),
+        api_caller=lambda **kwargs: json.dumps(
+            {
+                "module": "INF1103",
+                "assessment_type": "Project",
+                "deadline": "2026-10-12",
+                "weightage": 30,
+                "missing_fields": [],
+                "issues": [],
+            }
+        ),
+        today=date(2026, 10, 1),
+        record_id="credit-heavy",
+    )
+
+    assert result["record"]["priority"] == "MEDIUM"
+    assert result["schedule"]["blocks"][0]["priority"] == "HIGH"
+    assert data_manager.load_module_profiles(str(module_file)) == {
+        "INF1103": {"credits": 12.0}
+    }

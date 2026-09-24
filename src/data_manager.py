@@ -55,29 +55,7 @@ def save_records(records: List[Dict[str, Any]], data_file: str) -> bool:
         LOGGER.error("Refused to save records that violate the frozen contract")
         return False
 
-    temporary_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(records, indent=2, ensure_ascii=False) + "\n"
-        descriptor = os.open(
-            temporary_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as data_stream:
-            data_stream.write(serialized)
-            data_stream.flush()
-            os.fsync(data_stream.fileno())
-        os.replace(temporary_path, path)
-        os.chmod(path, 0o600)
-    except (OSError, TypeError, ValueError) as error:
-        LOGGER.error("Could not save data file %s: %s", path, error)
-        try:
-            temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
-    return True
+    return _write_json_atomic(records, path)
 
 
 def save_record_revision(record: Dict[str, Any], data_file: str) -> bool:
@@ -150,6 +128,42 @@ def next_revision(records: List[Dict[str, Any]], record_id: str) -> int:
     return 1 if latest is None else latest["revision"] + 1
 
 
+def load_module_profiles(module_file: str) -> Dict[str, Dict[str, float]]:
+    """Load module-credit metadata safely from its separate JSON store."""
+    profiles, load_error = _load_module_profiles_for_update(module_file)
+    if load_error:
+        LOGGER.error("Could not load module profiles %s: %s", module_file, load_error)
+        return {}
+    return {
+        module.strip().upper(): {"credits": float(profile["credits"])}
+        for module, profile in profiles.items()
+    }
+
+
+def save_module_profile(module: str, credits: float, module_file: str) -> bool:
+    """Create or update one module-credit profile without changing records."""
+    normalized_module = module.strip().upper()
+    if (
+        not normalized_module
+        or isinstance(credits, bool)
+        or not isinstance(credits, (int, float))
+        or not 0 < credits <= 60
+    ):
+        LOGGER.error("Refused invalid module credit metadata")
+        return False
+
+    profiles, load_error = _load_module_profiles_for_update(module_file)
+    if load_error:
+        LOGGER.error(
+            "Refused to overwrite unsafe module file %s: %s",
+            module_file,
+            load_error,
+        )
+        return False
+    profiles[normalized_module] = {"credits": float(credits)}
+    return _write_json_atomic(profiles, Path(module_file))
+
+
 def _load_records_for_update(data_file: str):
     """Load an existing store strictly so corrupt data is never overwritten."""
     path = Path(data_file)
@@ -168,6 +182,58 @@ def _load_records_for_update(data_file: str):
     ):
         return [], "existing data contains an invalid record"
     return payload, None
+
+
+def _load_module_profiles_for_update(module_file: str):
+    """Load module metadata strictly so corrupt profiles are not overwritten."""
+    path = Path(module_file)
+    if not path.exists():
+        return {}, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, "existing module data is unreadable or corrupt"
+    if not isinstance(payload, dict):
+        return {}, "existing module data is not a JSON object"
+    for module, profile in payload.items():
+        if (
+            not isinstance(module, str)
+            or not module.strip()
+            or not isinstance(profile, dict)
+            or set(profile) != {"credits"}
+            or isinstance(profile["credits"], bool)
+            or not isinstance(profile["credits"], (int, float))
+            or not 0 < profile["credits"] <= 60
+        ):
+            return {}, "existing module data contains an invalid profile"
+    return payload, None
+
+
+def _write_json_atomic(payload: Any, path: Path) -> bool:
+    """Write one JSON payload privately and replace the destination atomically."""
+    temporary_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        descriptor = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as data_stream:
+            data_stream.write(serialized)
+            data_stream.flush()
+            os.fsync(data_stream.fileno())
+        os.replace(temporary_path, path)
+        os.chmod(path, 0o600)
+    except (OSError, TypeError, ValueError) as error:
+        LOGGER.error("Could not save JSON file %s: %s", path, error)
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def filter_records(

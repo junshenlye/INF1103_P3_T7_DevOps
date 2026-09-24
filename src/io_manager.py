@@ -12,9 +12,13 @@ SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_BATCH_BYTES = 1024 * 1024
 MAX_BATCH_RECORDS = 50
+MAX_MODULE_CHARS = 32
+MAX_ASSESSMENT_TYPE_CHARS = 120
+MAX_PROMPT_CHARS = 4000
 ASSESSMENT_INPUT_FIELDS = {
     "record_id",
     "module",
+    "module_credits",
     "assessment_type",
     "deadline",
     "weightage",
@@ -29,6 +33,7 @@ def parse_cli_arguments(argv: Optional[List[str]] = None) -> Dict[str, Any]:
         description="Process an academic assessment through the AI pipeline."
     )
     parser.add_argument("--module")
+    parser.add_argument("--module-credits", type=float)
     parser.add_argument("--assessment-type")
     parser.add_argument("--deadline")
     parser.add_argument("--weightage", type=float)
@@ -53,6 +58,7 @@ def has_assessment_input(payload: Dict[str, Any]) -> bool:
     """Return whether CLI arguments request assessment processing."""
     fields = (
         "module",
+        "module_credits",
         "assessment_type",
         "deadline",
         "weightage",
@@ -81,11 +87,26 @@ def validate_user_input(payload: Dict[str, Any]) -> List[str]:
         errors.append("Record ID must be a non-empty string when supplied.")
     if not isinstance(payload.get("module"), str) or not payload["module"].strip():
         errors.append("Module is required.")
+    elif len(payload["module"].strip()) > MAX_MODULE_CHARS:
+        errors.append(f"Module may contain at most {MAX_MODULE_CHARS} characters.")
+    module_credits = payload.get("module_credits")
+    if module_credits is not None:
+        if isinstance(module_credits, bool) or not isinstance(
+            module_credits, (int, float)
+        ):
+            errors.append("Module credits must be a number or omitted.")
+        elif not 0 < module_credits <= 60:
+            errors.append("Module credits must be greater than 0 and at most 60.")
     if (
         not isinstance(payload.get("assessment_type"), str)
         or not payload["assessment_type"].strip()
     ):
         errors.append("Assessment type is required.")
+    elif len(payload["assessment_type"].strip()) > MAX_ASSESSMENT_TYPE_CHARS:
+        errors.append(
+            f"Assessment type may contain at most {MAX_ASSESSMENT_TYPE_CHARS} "
+            "characters."
+        )
 
     deadline = payload.get("deadline")
     if deadline is not None:
@@ -109,6 +130,8 @@ def validate_user_input(payload: Dict[str, Any]) -> List[str]:
     prompt = payload.get("prompt", "")
     if not isinstance(prompt, str):
         errors.append("Prompt must be text.")
+    elif len(prompt) > MAX_PROMPT_CHARS:
+        errors.append(f"Prompt may contain at most {MAX_PROMPT_CHARS} characters.")
 
     image_paths = payload.get("image_paths", [])
     if not isinstance(image_paths, list):
@@ -221,11 +244,17 @@ def format_schedule(schedule: Dict[str, Any]) -> str:
     if not blocks:
         lines.append("- No READY assessments can be scheduled yet.")
     for block in blocks:
+        credit_summary = ""
+        if block.get("module_credits") is not None:
+            credit_summary = (
+                f", {block['module_credits']:g} credits, "
+                f"load {block['credit_weighted_load']:g}"
+            )
         lines.append(
             f"- {block['start_date']} to {block['end_date']}: "
             f"{block['module']} {block['assessment_type']} "
             f"({block['priority']}, due {block['deadline']}, "
-            f"{block['block_size_days']} day(s))"
+            f"{block['block_size_days']} day(s){credit_summary})"
         )
     warnings = schedule.get("warnings", [])
     if warnings:

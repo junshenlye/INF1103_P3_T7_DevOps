@@ -33,7 +33,7 @@ def build_prompt(input_record: Dict[str, Any]) -> str:
     prompt_input = {
         key: value
         for key, value in input_record.items()
-        if key not in ("image_paths", "record_id")
+        if key not in ("image_paths", "record_id", "module_credits")
     }
     schema_example = {
         "module": "INF1103",

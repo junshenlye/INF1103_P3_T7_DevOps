@@ -7,6 +7,7 @@ def test_input_validation_returns_errors_for_wrong_types():
     errors = io_manager.validate_user_input(
         {
             "module": "INF1103",
+            "module_credits": "6",
             "assessment_type": "Project",
             "deadline": 20261015,
             "weightage": "30",
@@ -16,6 +17,7 @@ def test_input_validation_returns_errors_for_wrong_types():
     )
 
     assert "Deadline must be a string or omitted." in errors
+    assert "Module credits must be a number or omitted." in errors
     assert "Weightage must be a number or omitted." in errors
     assert "Prompt must be text." in errors
 
@@ -56,3 +58,19 @@ def test_batch_loader_rejects_malformed_or_empty_json(tmp_path):
 
     assert malformed["errors"] == ["Batch file is not valid JSON."]
     assert empty["errors"] == ["Batch file must contain a non-empty JSON list."]
+
+
+def test_prompt_length_is_bounded_for_free_api_usage():
+    errors = io_manager.validate_user_input(
+        {
+            "module": "INF1103",
+            "module_credits": 6,
+            "assessment_type": "Project",
+            "deadline": "2026-10-15",
+            "weightage": 30,
+            "prompt": "x" * (io_manager.MAX_PROMPT_CHARS + 1),
+            "image_paths": [],
+        }
+    )
+
+    assert "Prompt may contain at most 4000 characters." in errors

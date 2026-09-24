@@ -7,5 +7,4 @@
 **/*.py[cod]
 .DS_Store
 .Dockerfile
-frontend-demo
 tests

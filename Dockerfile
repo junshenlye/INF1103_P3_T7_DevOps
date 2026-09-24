@@ -15,6 +15,7 @@ COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser data ./data
 COPY --chown=appuser:appuser examples ./examples
 COPY --chown=appuser:appuser test_case ./test_case
+COPY --chown=appuser:appuser frontend-demo ./frontend-demo
 
 USER appuser
 
