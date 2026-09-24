@@ -100,6 +100,7 @@ def _build_prompt(input_data):
         "unclear or missing facts, and phrase each issue as an actionable checklist "
         "item explaining what evidence the student should add next. Do not add an "
         "issue when the assessment name, week, grouping, and weight are clear. "
+        "Weightage must use percentage points: return 15 for 15%, never 0.15. "
         "Return all visible components, or explain why none can "
         f"be extracted. Extra user context: {context or 'None'}"
     )
@@ -227,7 +228,10 @@ def _extraction_schema():
             },
             "weightage": {
                 "type": ["number", "null"],
-                "description": "The component's total percentage weight, otherwise null.",
+                "description": (
+                    "The total percentage in percentage points: 15 means 15%, "
+                    "never 0.15. Use null when unclear."
+                ),
             },
             "issues": {
                 "type": "array",
@@ -354,7 +358,22 @@ def _normalize_reply(reply):
                 "issues": issues,
             }
         )
+    _convert_fractional_weight_set(assessments)
     return {"assessments": assessments, "errors": errors}
+
+
+def _convert_fractional_weight_set(assessments):
+    """Convert an obvious 0–1 model weight set into percentage points."""
+    weights = [
+        assessment["weightage"]
+        for assessment in assessments
+        if assessment["weightage"] is not None
+    ]
+    if len(weights) >= 2 and max(weights) <= 1 and 0.99 <= sum(weights) <= 1.01:
+        for assessment in assessments:
+            if assessment["weightage"] is not None:
+                assessment["weightage"] = round(assessment["weightage"] * 100, 4)
+        LOGGER.info("Converted fractional model weights to percentage points")
 
 
 def _issue_text(issues):
