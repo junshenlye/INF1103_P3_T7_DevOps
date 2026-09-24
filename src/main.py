@@ -38,6 +38,7 @@ def process_request(input_data, api_caller=None, progress_callback=None):
         "ok": True,
         "source_module": module,
         "extracted_count": len(plan["assessments"]),
+        "model_used": extraction.get("model_used"),
         "errors": extraction["errors"],
         **plan,
     }

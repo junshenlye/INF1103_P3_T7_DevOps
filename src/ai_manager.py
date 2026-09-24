@@ -1,4 +1,4 @@
-"""Send module evidence to Nemotron and normalize its structured reply."""
+"""Route module evidence through vision models and normalize one reply."""
 
 import base64
 import http.client
@@ -11,26 +11,27 @@ import ssl
 
 
 LOGGER = logging.getLogger(__name__)
-MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+PRIMARY_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+BACKUP_MODEL = "dots-studio/dots-3-note-preview:free"
 
 
 def extract_assessments(input_data, api_caller=None, progress_callback=None):
     """Return every extracted assessment or a short list of errors."""
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = os.getenv("OPENROUTER_MODEL", MODEL).strip() or MODEL
     if api_caller is None and not api_key:
         return {"assessments": [], "errors": ["OPENROUTER_API_KEY is missing."]}
 
     caller = api_caller or _call_openrouter
-    attempts = _attempt_count()
+    models = _model_route()
     last_error = "The model could not process this evidence."
-    for attempt in range(1, attempts + 1):
+    for attempt, model in enumerate(models, start=1):
+        route_name = "Primary" if attempt == 1 else "Backup"
         _progress(
             progress_callback,
             "ai_request",
-            "Nemotron is reading the module evidence.",
+            f"{route_name} vision model is reading the evidence.",
             attempt=attempt,
-            max_attempts=attempts,
+            max_attempts=len(models),
         )
         try:
             reply = caller(
@@ -38,36 +39,45 @@ def extract_assessments(input_data, api_caller=None, progress_callback=None):
                 image_paths=input_data.get("image_paths", []),
                 api_key=api_key if api_caller is None else "",
                 model=model,
+                structured_output=attempt > 1,
             )
             _progress(
                 progress_callback,
                 "ai_validation",
-                "Nemotron replied; checking the structured result.",
+                f"{route_name} model replied; checking its structured result.",
                 attempt=attempt,
-                max_attempts=attempts,
+                max_attempts=len(models),
             )
             result = _normalize_reply(_parse_reply(reply))
-            if result["assessments"] or result["errors"]:
+            if result["assessments"]:
+                result["model_used"] = model
                 _progress(
                     progress_callback,
                     "ai_complete",
-                    f"Received {len(result['assessments'])} assessment(s).",
+                    f"{route_name} model extracted {len(result['assessments'])} assessment(s).",
                     attempt=attempt,
-                    max_attempts=attempts,
+                    max_attempts=len(models),
                     event_count=len(result["assessments"]),
                 )
                 return result
-            last_error = "The model returned no assessments or explanation."
+            last_error = next(
+                iter(result["errors"]),
+                "The model returned no assessments or explanation.",
+            )
         except (ConnectionError, OSError, TypeError, ValueError, KeyError) as error:
             last_error = _safe_error(error)
-            LOGGER.warning("Nemotron attempt %s failed: %s", attempt, last_error)
+            LOGGER.warning("Model route %s failed: %s", model, last_error)
 
         _progress(
             progress_callback,
-            "retrying" if attempt < attempts else "failed",
-            last_error,
+            "routing_backup" if attempt < len(models) else "failed",
+            (
+                "Primary model failed; routing the same evidence to the backup model."
+                if attempt < len(models)
+                else last_error
+            ),
             attempt=attempt,
-            max_attempts=attempts,
+            max_attempts=len(models),
         )
     return {"assessments": [], "errors": [last_error]}
 
@@ -86,34 +96,53 @@ def _build_prompt(input_data):
         "separate weights or identifies them as independent graded components.\n"
         "Use deadline Week N only when one exact module week is stated. For a "
         "range, recurrence, calendar date, conflict, or missing deadline, use "
-        "null and explain the source wording in issues. Never guess or divide a "
-        "shared weightage. Return all visible components, or explain why none can "
+        "null. Never guess or divide a shared weightage. Use issues only for "
+        "unclear or missing facts, and phrase each issue as an actionable checklist "
+        "item explaining what evidence the student should add next. Do not add an "
+        "issue when the assessment name, week, grouping, and weight are clear. "
+        "Return all visible components, or explain why none can "
         f"be extracted. Extra user context: {context or 'None'}"
     )
 
 
-def _call_openrouter(prompt, image_paths, api_key, model):
+def _call_openrouter(prompt, image_paths, api_key, model, structured_output=False):
     """Call OpenRouter and return its assistant message."""
-    request_body = json.dumps(
-        {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Extract academic assessment facts without guessing.",
-                },
-                {"role": "user", "content": _user_content(prompt, image_paths)},
-            ],
-            "tools": [_extraction_tool()],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "submit_assessments"},
+    request = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Extract academic assessment facts without guessing. "
+                    "Turn uncertainty into concise, actionable evidence requests."
+                ),
             },
-            "reasoning": {"enabled": False},
-            "temperature": 0,
-            "max_tokens": 2000,
+            {"role": "user", "content": _user_content(prompt, image_paths)},
+        ],
+        "temperature": 0,
+        "max_tokens": 4000 if structured_output else 2000,
+    }
+    if structured_output:
+        request["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "module_assessments",
+                "strict": True,
+                "schema": _extraction_schema(),
+            },
         }
-    ).encode("utf-8")
+    else:
+        request.update(
+            {
+                "tools": [_extraction_tool()],
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": "submit_assessments"},
+                },
+                "reasoning": {"enabled": False},
+            }
+        )
+    request_body = json.dumps(request).encode("utf-8")
     connection = http.client.HTTPSConnection(
         "openrouter.ai",
         timeout=90,
@@ -170,32 +199,57 @@ def _user_content(prompt, image_paths):
 
 def _extraction_tool():
     """Return the one stable schema used for every assessment format."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_assessments",
+            "description": (
+                "Submit every assessment. Put uncertainty in that assessment's "
+                "issues as actionable missing-evidence checklist items."
+            ),
+            "parameters": _extraction_schema(),
+        },
+    }
+
+
+def _extraction_schema():
+    """Describe generic assessment facts without naming module-specific types."""
     assessment = {
         "type": "object",
         "properties": {
-            "assessment_type": {"type": "string"},
-            "deadline": {"type": ["string", "null"]},
-            "weightage": {"type": ["number", "null"]},
-            "issues": {"type": "array", "items": {"type": "string"}},
+            "assessment_type": {
+                "type": "string",
+                "description": "The assessment name copied from the evidence.",
+            },
+            "deadline": {
+                "type": ["string", "null"],
+                "description": "One exact Week N deadline, otherwise null.",
+            },
+            "weightage": {
+                "type": ["number", "null"],
+                "description": "The component's total percentage weight, otherwise null.",
+            },
+            "issues": {
+                "type": "array",
+                "description": "Actionable evidence requests for unclear facts only.",
+                "items": {"type": "string"},
+            },
         },
         "required": ["assessment_type", "deadline", "weightage", "issues"],
         "additionalProperties": False,
     }
     return {
-        "type": "function",
-        "function": {
-            "name": "submit_assessments",
-            "description": "Submit every extracted assessment or extraction error.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "assessments": {"type": "array", "items": assessment},
-                    "errors": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["assessments", "errors"],
-                "additionalProperties": False,
+        "type": "object",
+        "properties": {
+            "assessments": {"type": "array", "items": assessment},
+            "errors": {
+                "type": "array",
+                "description": "Fatal reading errors only; otherwise empty.",
+                "items": {"type": "string"},
             },
         },
+        "required": ["assessments", "errors"],
+        "additionalProperties": False,
     }
 
 
@@ -266,7 +320,9 @@ def _normalize_reply(reply):
         if week_match:
             deadline = f"Week {int(week_match.group(1))}"
         elif deadline is not None:
-            issues.append(f"Deadline needs review: {deadline}")
+            issues.append(
+                f"Add deadline evidence in Week N format for {name}; found: {deadline}."
+            )
             deadline = None
 
         weightage = item.get("weightage")
@@ -274,18 +330,22 @@ def _normalize_reply(reply):
             try:
                 weightage = float(weightage.strip().rstrip("%"))
             except ValueError:
-                issues.append(f"Weightage needs review: {weightage}")
+                issues.append(
+                    f"Add evidence giving one percentage weight for {name}; found: {weightage}."
+                )
                 weightage = None
         if isinstance(weightage, bool) or not isinstance(weightage, (int, float)):
             weightage = None
         elif not 0 <= weightage <= 100:
-            issues.append(f"Weightage needs review: {weightage}")
+            issues.append(
+                f"Add evidence giving a weight from 0% to 100% for {name}."
+            )
             weightage = None
 
         if deadline is None and not any("deadline" in issue.lower() for issue in issues):
-            issues.append("Deadline was not found as one exact module week.")
+            issues.append("Add evidence showing one exact deadline as Week N.")
         if weightage is None and not any("weight" in issue.lower() for issue in issues):
-            issues.append("Weightage was not found.")
+            issues.append("Add evidence showing this assessment's percentage weight.")
         assessments.append(
             {
                 "assessment_type": name,
@@ -312,12 +372,11 @@ def _issue_text(issues):
     return result
 
 
-def _attempt_count():
-    """Keep free-model retries deliberately small."""
-    try:
-        return max(1, min(int(os.getenv("AI_MAX_RETRIES", "2")), 2))
-    except ValueError:
-        return 2
+def _model_route():
+    """Return one primary model followed by one distinct backup model."""
+    primary = os.getenv("OPENROUTER_MODEL", PRIMARY_MODEL).strip() or PRIMARY_MODEL
+    backup = os.getenv("OPENROUTER_BACKUP_MODEL", BACKUP_MODEL).strip() or BACKUP_MODEL
+    return [primary] if primary == backup else [primary, backup]
 
 
 def _safe_error(error):

@@ -22,6 +22,7 @@ def load_dashboard(api_url):
         return {
             "module": None,
             "assessments": [],
+            "checklist": [],
             "records_loaded": 0,
             "schedule": {"blocks": [], "weeks": [], "warnings": []},
         }, f"Docker API is unavailable at {api_url}."

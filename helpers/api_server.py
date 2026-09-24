@@ -205,6 +205,7 @@ def run_extraction_job(job_id, input_source, upload_directory):
         "ok": bool(result.get("ok")),
         "source_module": result.get("source_module", ""),
         "extracted_count": result.get("extracted_count", 0),
+        "model_used": result.get("model_used"),
         "errors": list(result.get("errors", [])),
     }
     if summary["ok"]:

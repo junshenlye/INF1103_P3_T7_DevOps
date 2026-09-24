@@ -9,7 +9,7 @@ timetable. This MVP deliberately analyses one module at a time.
 ```text
 Input
   -> I/O Manager validates user data
-  -> AI Manager extracts structured events
+  -> AI Manager extracts structured events (Nemotron, then Dots3 fallback)
   -> Logic Manager assigns status, priority, and deadline week
   -> Data Manager saves the finished plan
 Output
@@ -24,7 +24,7 @@ application state at module level.
 ```text
 src/
   io_manager.py       request validation
-  ai_manager.py       Nemotron/OpenRouter extraction
+  ai_manager.py       Nemotron/Dots3 extraction through OpenRouter
   logic_manager.py    deterministic status and timetable rules
   data_manager.py     PostgreSQL persistence
   main.py             passes results between managers
@@ -70,13 +70,14 @@ Uploaded images and extraction progress files are also temporary.
 
 1. Enter one module code.
 2. Drop all screenshots for that module into one request.
-3. Watch the extraction stages and bounded AI retries.
-4. Review the extracted assessments and any missing information.
-5. See READY events as small coloured blocks from Week 1 to the final deadline.
+3. Watch the extraction route move to Dots3 if Nemotron fails.
+4. Receive the read-only Week 1…N timetable.
+5. Use the AI checklist to find evidence missing from unscheduled items.
 
-Deadlines use only `Week N` (for example, `Week 3`). Missing weeks or weights
-remain visible for review but stay out of the timetable. Multiple events in
-the same week stack vertically, with higher priority lower in the stack.
+Deadlines use only `Week N` (for example, `Week 3`). Missing or ambiguous facts
+stay out of the timetable and appear as actionable evidence requests; there is
+no block editor. Multiple events in the same week stack vertically, with higher
+priority lower in the stack.
 
 Automated test files are intentionally kept local during this early MVP and are
 ignored by Git to keep the shared repository focused on the handoff code.

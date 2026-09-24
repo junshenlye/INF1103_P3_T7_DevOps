@@ -5,9 +5,11 @@ def build_plan(module, assessments):
     """Add deterministic status and priority, then build week columns."""
     records = []
     for assessment in assessments:
+        issues = list(assessment.get("issues", []))
         ready = (
             assessment.get("deadline") is not None
             and assessment.get("weightage") is not None
+            and not issues
         )
         records.append(
             {
@@ -21,7 +23,7 @@ def build_plan(module, assessments):
                     else None
                 ),
                 "status": "READY" if ready else "REVIEW",
-                "issues": list(assessment.get("issues", [])),
+                "issues": issues,
             }
         )
 
@@ -52,18 +54,22 @@ def build_plan(module, assessments):
         }
         for week in range(1, final_week + 1)
     ]
-    review_count = sum(record["status"] == "REVIEW" for record in records)
+    checklist = [
+        {
+            "assessment_type": record["assessment_type"],
+            "items": record["issues"],
+        }
+        for record in records
+        if record["status"] == "REVIEW"
+    ]
     return {
         "module": module,
         "assessments": records,
+        "checklist": checklist,
         "schedule": {
             "weeks": weeks,
             "blocks": blocks,
-            "warnings": (
-                [f"{review_count} assessment(s) need review before scheduling."]
-                if review_count
-                else []
-            ),
+            "warnings": [],
         },
     }
 

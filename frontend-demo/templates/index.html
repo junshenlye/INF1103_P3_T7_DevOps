@@ -17,7 +17,7 @@
       </a>
       <div class="header-status">
         <span class="status-dot" aria-hidden="true"></span>
-        {{ records_loaded }} assessment{% if records_loaded != 1 %}s{% endif %}
+        {{ schedule.blocks|length }} scheduled
       </div>
     </header>
 
@@ -64,7 +64,7 @@
 
             <label class="prompt-field">
               <span>Extra context <small>optional when the snapshots are clear</small></span>
-              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: Tutorial 1–10 together form one 5% assessment."></textarea>
+              <textarea name="prompt" rows="4" maxlength="4000" placeholder="Add context only when the screenshots use unusual wording or week numbering."></textarea>
             </label>
 
             <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
@@ -98,50 +98,6 @@
           </form>
         </article>
 
-      </section>
-
-      <section class="review-section">
-        <div class="schedule-heading">
-          <div>
-            <p class="eyebrow">Extraction review</p>
-            <h2>{{ module or 'Module' }} assessments</h2>
-            <p>The AI extracts each graded component and comments when a value needs review.</p>
-          </div>
-          <span class="review-count">{{ assessments|length }} assessment{% if assessments|length != 1 %}s{% endif %}</span>
-        </div>
-
-        {% if assessments %}
-          <div class="assessment-review-grid">
-            {% for record in assessments %}
-              <article class="review-card status-{{ record.status|lower }}">
-                <div class="review-card-heading">
-                  <div>
-                    <span class="module-code">{{ record.module }}</span>
-                    <h3>{{ record.assessment_type }}</h3>
-                  </div>
-                  <span class="record-status">{{ record.status|replace('_', ' ') }}</span>
-                </div>
-                <dl class="review-facts">
-                  <div><dt>Deadline</dt><dd>{{ record.deadline or 'Missing' }}</dd></div>
-                  <div><dt>Weight</dt><dd>{% if record.weightage is not none %}{{ record.weightage|round(1) }}%{% else %}Missing{% endif %}</dd></div>
-                  <div><dt>Priority</dt><dd>{{ record.priority or 'Pending' }}</dd></div>
-                </dl>
-
-                {% if record.issues %}
-                  <ul class="record-issues">
-                    {% for issue in record.issues %}<li>{{ issue }}</li>{% endfor %}
-                  </ul>
-                {% endif %}
-              </article>
-            {% endfor %}
-          </div>
-        {% else %}
-          <div class="empty-schedule compact-empty">
-            <span>AI</span>
-            <h3>No assessments extracted yet</h3>
-            <p>Upload one module's snapshots above. A single evidence pack can create many events.</p>
-          </div>
-        {% endif %}
       </section>
 
       <section class="schedule-section">
@@ -194,12 +150,31 @@
           </div>
         {% endif %}
 
-        {% if schedule.warnings %}
-          <div class="warning-list">
-            {% for warning in schedule.warnings %}<p>{{ warning }}</p>{% endfor %}
-          </div>
-        {% endif %}
       </section>
+
+      {% if checklist %}
+        <section class="checklist-section" aria-labelledby="checklist-title">
+          <div class="schedule-heading">
+            <div>
+              <p class="eyebrow">Missing timetable information</p>
+              <h2 id="checklist-title">What to add next</h2>
+              <p>These items were not placed because a timetable fact was missing or ambiguous. Add the requested material in a later upload.</p>
+            </div>
+            <span class="checklist-count">{{ checklist|length }} to review</span>
+          </div>
+          <div class="checklist-grid">
+            {% for entry in checklist %}
+              <article class="checklist-card">
+                <span>Not scheduled</span>
+                <h3>{{ entry.assessment_type }}</h3>
+                <ul>
+                  {% for item in entry['items'] %}<li>{{ item }}</li>{% endfor %}
+                </ul>
+              </article>
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
     </main>
 
     <footer>
