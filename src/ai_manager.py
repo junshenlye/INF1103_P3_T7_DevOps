@@ -29,8 +29,19 @@ def extract_assessments(input_data, api_caller=None):
     best_result = None
     for attempt, model in enumerate(models, start=1):
         try:
+            prompt = _build_prompt(input_data)
+            if best_result:
+                recovered_weight = sum(
+                    item["weightage"] or 0
+                    for item in best_result["assessments"]
+                )
+                prompt += (
+                    f"\nA previous reading found only {len(best_result['assessments'])} "
+                    f"component(s) totalling {recovered_weight:g}%. Re-scan the "
+                    "original evidence for anything it missed."
+                )
             reply = caller(
-                prompt=_build_prompt(input_data),
+                prompt=prompt,
                 image_paths=input_data.get("image_paths", []),
                 api_key=api_key if api_caller is None else "",
                 model=model,
