@@ -1,68 +1,83 @@
-# INF1103_P3_T7_DevOps
+# Stackplan MVP
 
-1. Problem Statement and Target Users
-o What real world problem does your application aim to solve?
+Stackplan reads one module's assessment screenshots, extracts every visible
+assessment, and turns valid events into a compact weekly preparation timetable.
 
-Students often struggle to manage multiple assignments, quizzes, and exams across different modules, especially when deadlines overlap. Our application provides a consolidated academic schedule and helps students prioritize tasks based on deadlines and assessment weightage, allowing them to make better trade-offs between competing academic commitments. 
+The current milestone deliberately handles one module at a time. Multi-module
+competition is the next iteration.
 
-o Who are the intended users of the application?
+## Procedural flow
 
-SIT students managing multiple modules and graded assessments.
+```text
+Input
+  -> I/O Manager validates user data
+  -> AI Manager extracts structured events
+  -> Logic Manager assigns status, priority, and preparation dates
+  -> Data Manager validates and saves the finished records
+Output
+```
 
-2. User Inputs
-o What information or data will users provide to the system?
-Users provide:
+Each stage receives ordinary dictionaries as arguments and returns a result to
+the next stage. Project-owned Python defines no classes and keeps no mutable
+application state at module level.
 
-Assessment details: module, assessment type, weightage, and deadline.
-Study preferences: personalized rules for prioritization, such as additional revision time before quizzes or buffer periods before final exams.
+## Small file map
 
-These inputs allow the system to generate a priority timeline tailored to each student’s workload and study habits.
+```text
+src/
+  io_manager.py       input/output and record validation
+  ai_manager.py       Nemotron/OpenRouter extraction
+  logic_manager.py    deterministic status and timetable rules
+  data_manager.py     JSON/PostgreSQL persistence and history
+  main.py             passes results between managers; CLI entry point
 
-3. Use of AI
-o How will AI be utilized within the application?
+helpers/api_server.py thin Docker HTTP adapter and temporary progress files
+frontend-demo/        host-run presentation only
+```
 
-A multimodal AI model will extract assessment information from uploaded module schedules and combine it with the user's study preferences. The model will evaluate competing assessments based on factors such as deadline, weightage, and required preparation time to determine their relative priority.
+`data_manager.py` uses PostgreSQL when Docker supplies `DATABASE_URL`. The CLI
+continues to use JSON, so the graded procedural core does not require Docker.
+Those local JSON files are created under the Git-ignored `data/` directory.
 
-o What outputs, insights, or recommendations will the AI generate from the user inputs?
+## Run
 
-The AI will generate a rolling priority timeline containing upcoming assessments and recommended preparation periods.
+Copy `.env.example` to `.env` and provide `OPENROUTER_API_KEY`.
 
-Each event will include:
+Start the main program and temporary database:
 
-Module and assessment type
-Deadline
-Assessment weightage
-Recommended preparation period
-Priority level
+```sh
+docker compose up --build
+```
 
-When multiple assessments occur within the same period, they will be displayed as stacked blocks to show competing workload and priority.
+Start the editable frontend outside Docker in a second terminal:
 
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python frontend-demo/app.py
+```
 
-4. Business Rules
-o What business rules, validations, or decision-making logic will be applied to the AI-generated outputs?
+Addresses:
 
-The AI output must follow a predefined JSON structure before it can be accepted by the application.
+- Frontend: http://127.0.0.1:5050
+- Docker API: http://127.0.0.1:8000
+- Health check: http://127.0.0.1:8000/health
+- PostgreSQL: `127.0.0.1:5433`
 
-Each timeline block must contain required fields such as:
+PostgreSQL uses Docker `tmpfs`. `docker compose down` clears the current data.
+Uploaded images and extraction progress files are also temporary.
 
-Module
-Assessment category
-Deadline
-Weightage
-Priority
-Start and end period
-Block size
+## Current proof of concept
 
-The application will validate that:
+1. Enter one module code and its credits.
+2. Drop all screenshots for that module into one request.
+3. Watch the extraction stages and bounded AI retries.
+4. Review the extracted assessments.
+5. See READY events as small coloured blocks in a weekly strip.
 
-Required fields are present.
-Dates and weightages are valid.
-Events are positioned in the correct week.
-Higher-weighted or more urgent assessments receive appropriate priority.
-Timeline blocks follow the required category and size format.
+Missing deadlines or weights remain visible for correction but stay out of the
+timetable. The saved record shape remains the frozen assignment contract.
 
-Invalid AI outputs will be rejected and regenerated before being displayed to the user.
-
-Git Repository:
-https://github.com/junshenlye/INF1103_P3_T7_DevOps 
-
+Automated test files are intentionally kept local during this early MVP and are
+ignored by Git to keep the shared repository focused on the handoff code.
