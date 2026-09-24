@@ -6,26 +6,26 @@ services:
     env_file:
       - .env
     environment:
-      DATA_FILE: /app/data/schedules.json
-      MODULE_FILE: /app/data/modules.json
-    volumes:
-      - ./data:/app/data
-    stdin_open: true
-    tty: true
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    entrypoint:
-      - python
-      - frontend-demo/app.py
-    env_file:
-      - .env
-    environment:
-      DATA_FILE: /app/data/schedules.json
-      MODULE_FILE: /app/data/modules.json
-      PORT: 5000
-    volumes:
-      - ./data:/app/data
+      API_PORT: 8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-stackplan}:${POSTGRES_PASSWORD:-stackplan_dev}@db:5432/${POSTGRES_DB:-stackplan}
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
-      - "${WEB_PORT:-5050}:5000"
+      - "${API_PORT:-8000}:8000"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stackplan}
+      POSTGRES_USER: ${POSTGRES_USER:-stackplan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stackplan_dev}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stackplan} -d ${POSTGRES_DB:-stackplan}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data

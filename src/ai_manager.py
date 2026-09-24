@@ -345,9 +345,65 @@ def validate_source_extraction(
     return errors
 
 
+def normalize_source_response(
+    response: Dict[str, Any],
+    expected_module: str,
+) -> Dict[str, Any]:
+    """Repair safe omissions without inventing assessment facts."""
+    if not isinstance(response, dict) or not isinstance(
+        response.get("assessments"), list
+    ):
+        return response
+
+    normalized_assessments = []
+    normalized_module = expected_module.strip().upper()
+    for assessment in response["assessments"]:
+        if not isinstance(assessment, dict):
+            normalized_assessments.append(assessment)
+            continue
+        normalized = dict(assessment)
+        normalized["module"] = normalized_module
+        deadline = normalized.get("deadline")
+        weightage = normalized.get("weightage")
+        if "deadline" in normalized and "weightage" in normalized:
+            normalized["missing_fields"] = [
+                field
+                for field, value in (
+                    ("deadline", deadline),
+                    ("weightage", weightage),
+                )
+                if value is None
+            ]
+        issues = normalized.get("issues")
+        if isinstance(issues, list):
+            normalized_issues = list(issues)
+            for field in normalized.get("missing_fields", []):
+                if field not in ("deadline", "weightage"):
+                    continue
+                if any(
+                    isinstance(issue, dict) and issue.get("field") == field
+                    for issue in normalized_issues
+                ):
+                    continue
+                normalized_issues.append(
+                    {
+                        "type": "MISSING_DETAIL",
+                        "field": field,
+                        "severity": "warning",
+                        "feedback": (
+                            f"No {field} was found in the supplied module evidence."
+                        ),
+                    }
+                )
+            normalized["issues"] = normalized_issues
+        normalized_assessments.append(normalized)
+    return {"assessments": normalized_assessments}
+
+
 def process_source(
     input_source: Dict[str, Any],
     api_caller: Optional[Callable[..., str]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Extract and validate every assessment in one module evidence pack."""
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -379,6 +435,15 @@ def process_source(
 
     for attempt in range(1, max_attempts + 1):
         LOGGER.info("AI source request attempt %s using model %s", attempt, model)
+        _emit_progress(
+            progress_callback,
+            {
+                "stage": "ai_request",
+                "message": "Waiting for Nemotron to read the evidence pack.",
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            },
+        )
         try:
             response_text = caller(
                 prompt=build_source_prompt(input_source),
@@ -387,7 +452,20 @@ def process_source(
                 model=model,
                 base_url=base_url,
             )
+            _emit_progress(
+                progress_callback,
+                {
+                    "stage": "ai_validation",
+                    "message": "Nemotron responded; validating every event.",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                },
+            )
             response = parse_model_response(response_text)
+            response = normalize_source_response(
+                response,
+                input_source["module"],
+            )
             schema_errors = validate_source_extraction(
                 response,
                 input_source["module"],
@@ -406,6 +484,19 @@ def process_source(
                 attempt,
                 last_errors[0],
             )
+            _emit_progress(
+                progress_callback,
+                {
+                    "stage": "retrying" if attempt < max_attempts else "failed",
+                    "message": (
+                        f"Attempt {attempt} failed: {last_errors[0]}"
+                        if attempt < max_attempts
+                        else last_errors[0]
+                    ),
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                },
+            )
             continue
 
         if schema_errors:
@@ -415,8 +506,33 @@ def process_source(
                 attempt,
                 schema_errors,
             )
+            _emit_progress(
+                progress_callback,
+                {
+                    "stage": "retrying" if attempt < max_attempts else "failed",
+                    "message": (
+                        "The response was incomplete or malformed; retrying."
+                        if attempt < max_attempts
+                        else "The model response could not be validated."
+                    ),
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                },
+            )
             continue
 
+        _emit_progress(
+            progress_callback,
+            {
+                "stage": "ai_complete",
+                "message": (
+                    f"Validated {len(response['assessments'])} assessment event(s)."
+                ),
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "event_count": len(response["assessments"]),
+            },
+        )
         return {
             "ok": True,
             "extractions": response["assessments"],
@@ -537,3 +653,16 @@ def _safe_processing_error(error: Exception) -> str:
     if isinstance(error, (IndexError, KeyError)):
         return "OpenRouter response shape was invalid."
     return "AI response could not be processed."
+
+
+def _emit_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    event: Dict[str, Any],
+) -> None:
+    """Report non-sensitive progress without coupling AI logic to a UI."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(dict(event))
+    except Exception:
+        LOGGER.warning("Progress callback failed and was ignored")

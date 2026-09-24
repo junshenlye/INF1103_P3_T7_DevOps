@@ -4,23 +4,27 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_dockerfile_runs_procedural_cli_as_non_root_user():
+def test_dockerfile_runs_procedural_api_as_non_root_user():
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "USER appuser" in dockerfile
-    assert 'ENTRYPOINT ["python", "-m", "src.main"]' in dockerfile
+    assert 'ENTRYPOINT ["python", "helpers/api_server.py"]' in dockerfile
+    assert "COPY --chown=appuser:appuser helpers ./helpers" in dockerfile
+    assert "frontend-demo" not in dockerfile
     assert "COPY .env" not in dockerfile
 
 
-def test_compose_mounts_persistent_data_and_injects_env_file():
+def test_compose_exposes_api_and_ephemeral_postgres():
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "./data:/app/data" in compose
-    assert "DATA_FILE: /app/data/schedules.json" in compose
-    assert "MODULE_FILE: /app/data/modules.json" in compose
+    assert "postgres:16-alpine" in compose
+    assert "/var/lib/postgresql/data" in compose
+    assert "tmpfs:" in compose
+    assert '"${API_PORT:-8000}:8000"' in compose
+    assert '"${POSTGRES_PORT:-5433}:5432"' in compose
+    assert "DATABASE_URL:" in compose
     assert "- .env" in compose
-    assert '"${WEB_PORT:-5050}:5000"' in compose
-    assert "frontend-demo/app.py" in compose
+    assert "./data:/app/data" not in compose
 
 
 def test_docker_context_excludes_local_secrets_and_tooling():

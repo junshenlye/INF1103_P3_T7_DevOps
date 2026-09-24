@@ -8,7 +8,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from . import ai_manager, contracts, data_manager, io_manager, logic_manager
+from . import (
+    ai_manager,
+    contracts,
+    data_manager,
+    io_manager,
+    logic_manager,
+    storage_manager,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -49,8 +56,8 @@ def start_application(
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     resolved_data_file = resolve_data_file_path(data_file)
     resolved_module_file = resolve_module_file_path(module_file)
-    records = data_manager.load_records(resolved_data_file)
-    module_profiles = data_manager.load_module_profiles(resolved_module_file)
+    records = storage_manager.load_records(resolved_data_file)
+    module_profiles = storage_manager.load_module_profiles(resolved_module_file)
     latest = data_manager.latest_records(records)
     return {
         "records": records,
@@ -89,7 +96,7 @@ def process_assessment(
     resolved_data_file = resolve_data_file_path(data_file)
     resolved_module_file = resolve_module_file_path(module_file)
     module_credits = input_record.get("module_credits")
-    if module_credits is not None and not data_manager.save_module_profile(
+    if module_credits is not None and not storage_manager.save_module_profile(
         input_record["module"],
         module_credits,
         resolved_module_file,
@@ -101,7 +108,7 @@ def process_assessment(
             "ai_attempts": 0,
             "preserved": False,
         }
-    existing_records = data_manager.load_records(resolved_data_file)
+    existing_records = storage_manager.load_records(resolved_data_file)
     resolved_record_id = (
         record_id
         or input_record.get("record_id")
@@ -125,7 +132,7 @@ def process_assessment(
             revision=revision,
             today=today,
         )
-        if not data_manager.save_record_revision(
+        if not storage_manager.save_record_revision(
             recoverable_record,
             resolved_data_file,
         ):
@@ -166,7 +173,7 @@ def process_assessment(
             "ai_attempts": ai_result["attempts"],
         }
 
-    if not data_manager.save_record_revision(final_record, resolved_data_file):
+    if not storage_manager.save_record_revision(final_record, resolved_data_file):
         return {
             "ok": False,
             "record": None,
@@ -195,9 +202,15 @@ def process_assessment_source(
     module_file: Optional[str] = None,
     api_caller: Optional[Callable[..., str]] = None,
     today: Optional[date] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Extract and atomically persist all events from one module evidence pack."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
+    _emit_progress(
+        progress_callback,
+        "validating",
+        "Checking module context and uploaded evidence.",
+    )
     source_errors = io_manager.validate_source_input(input_source)
     source_module = (
         input_source.get("module", "").strip().upper()
@@ -206,6 +219,11 @@ def process_assessment_source(
         else ""
     )
     if source_errors:
+        _emit_progress(
+            progress_callback,
+            "failed",
+            "The evidence pack did not pass input validation.",
+        )
         return {
             "ok": False,
             "records": [],
@@ -218,7 +236,12 @@ def process_assessment_source(
 
     resolved_data_file = resolve_data_file_path(data_file)
     resolved_module_file = resolve_module_file_path(module_file)
-    if not data_manager.save_module_profile(
+    _emit_progress(
+        progress_callback,
+        "module_context",
+        f"Saving credit context for {source_module}.",
+    )
+    if not storage_manager.save_module_profile(
         source_module,
         input_source["module_credits"],
         resolved_module_file,
@@ -238,6 +261,7 @@ def process_assessment_source(
     ai_result = ai_manager.process_source(
         normalized_source,
         api_caller=api_caller,
+        progress_callback=progress_callback,
     )
     if not ai_result["ok"]:
         return {
@@ -250,10 +274,16 @@ def process_assessment_source(
             "preserved": False,
         }
 
-    existing_records = data_manager.load_records(resolved_data_file)
+    existing_records = storage_manager.load_records(resolved_data_file)
     used_record_ids = {record["record_id"] for record in existing_records}
     final_records = []
     contract_errors = []
+    _emit_progress(
+        progress_callback,
+        "building_records",
+        f"Building {len(ai_result['extractions'])} validated assessment record(s).",
+        event_count=len(ai_result["extractions"]),
+    )
     for index, extraction in enumerate(ai_result["extractions"]):
         record_id = data_manager.generate_record_id()
         while record_id in used_record_ids:
@@ -286,7 +316,7 @@ def process_assessment_source(
             "preserved": False,
         }
 
-    if not data_manager.save_record_revisions(final_records, resolved_data_file):
+    if not storage_manager.save_record_revisions(final_records, resolved_data_file):
         return {
             "ok": False,
             "records": [],
@@ -297,6 +327,11 @@ def process_assessment_source(
             "preserved": False,
         }
 
+    _emit_progress(
+        progress_callback,
+        "scheduling",
+        "Recalculating the combined multi-module schedule.",
+    )
     schedule = build_current_schedule(
         resolved_data_file,
         today=today,
@@ -314,15 +349,32 @@ def process_assessment_source(
     }
 
 
+def _emit_progress(
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    stage: str,
+    message: str,
+    **details: Any,
+) -> None:
+    """Send one non-sensitive orchestration progress event when requested."""
+    if progress_callback is None:
+        return
+    event = {"stage": stage, "message": message}
+    event.update(details)
+    try:
+        progress_callback(event)
+    except Exception:
+        logging.warning("Progress callback failed and was ignored")
+
+
 def build_current_schedule(
     data_file: str,
     today: Optional[date] = None,
     module_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a schedule from only the latest persisted record revisions."""
-    records = data_manager.load_records(data_file)
+    records = storage_manager.load_records(data_file)
     latest = data_manager.latest_records(records)
-    module_profiles = data_manager.load_module_profiles(
+    module_profiles = storage_manager.load_module_profiles(
         resolve_module_file_path(module_file)
     )
     return logic_manager.build_schedule(
@@ -351,7 +403,7 @@ def correct_assessment(
 
     resolved_data_file = resolve_data_file_path(data_file)
     resolved_module_file = resolve_module_file_path(module_file)
-    records = data_manager.load_records(resolved_data_file)
+    records = storage_manager.load_records(resolved_data_file)
     latest = data_manager.get_latest_record(records, record_id)
     if latest is None:
         return {
@@ -394,7 +446,7 @@ def correct_assessment(
             "errors": contract_errors,
             "preserved": False,
         }
-    if not data_manager.save_record_revision(corrected_record, resolved_data_file):
+    if not storage_manager.save_record_revision(corrected_record, resolved_data_file):
         return {
             "ok": False,
             "record": None,
@@ -446,7 +498,7 @@ def reprocess_assessment(
 
     resolved_data_file = resolve_data_file_path(data_file)
     resolved_module_file = resolve_module_file_path(module_file)
-    records = data_manager.load_records(resolved_data_file)
+    records = storage_manager.load_records(resolved_data_file)
     latest = data_manager.get_latest_record(records, record_id)
     if latest is None:
         return {
@@ -466,7 +518,7 @@ def reprocess_assessment(
         "prompt": "",
         "image_paths": [],
     }
-    module_profiles = data_manager.load_module_profiles(resolved_module_file)
+    module_profiles = storage_manager.load_module_profiles(resolved_module_file)
     module_profile = module_profiles.get(latest["module"].strip().upper())
     if module_profile is not None:
         merged_input["module_credits"] = module_profile["credits"]
@@ -536,7 +588,7 @@ def process_batch(
             continue
 
         record_id = input_record.get("record_id")
-        existing_records = data_manager.load_records(resolved_data_file)
+        existing_records = storage_manager.load_records(resolved_data_file)
         if record_id and data_manager.get_latest_record(existing_records, record_id):
             result = reprocess_assessment(
                 record_id,

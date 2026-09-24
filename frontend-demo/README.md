@@ -1,37 +1,26 @@
-# Stackplan frontend demo
+# Host frontend
 
-This is a thin Flask adapter over the procedural core in `src/`. It contains no
-assessment, priority, scheduling, AI, or persistence rules.
+This Flask app runs outside Docker and renders data from the local Docker API.
+It does not import the assessment core or connect to PostgreSQL directly.
 
-It supports:
-
-- drag-and-drop multi-image evidence packs;
-- one-to-many assessment extraction in a single AI request;
-- normal-language context prompts when screenshots need clarification;
-- persistent module-credit profiles;
-- post-extraction human review without another AI call;
-- credit-weighted schedule priority;
-- horizontal week columns;
-- vertical same-week stacking with HIGH priority at the bottom;
-- priority colour coding.
-
-Requires Python 3.9 or newer. Run these commands from the repository root:
+Start Docker first:
 
 ```sh
-python3 -m venv .venv
+docker compose up --build
+```
+
+Then run the frontend from the repository root:
+
+```sh
 source .venv/bin/activate
-python -m pip install -r requirements.txt
 python frontend-demo/app.py
 ```
 
-Open http://127.0.0.1:5000/ in your browser.
+Open http://127.0.0.1:5050. The frontend calls
+http://127.0.0.1:8000 by default. Override that address with
+`STACKPLAN_API_URL` only when required.
 
-Uploaded images are request-scoped temporary files and are deleted after the
-procedural pipeline returns. Do not upload confidential or personal material to
-the free AI endpoint.
-
-The primary form asks for module code and credits because those details are
-commonly absent from module assessment snapshots. Assessment name, deadline,
-and weightage are pulled from the evidence by the model and shown afterward in
-the review area. Repeating this flow for other modules builds one combined
-priority schedule.
+The browser uploads an evidence pack directly to the local API and polls a
+short-lived progress record. It shows elapsed time, current stage, AI attempt,
+validation, record creation, and scheduling progress. Uploaded images are
+deleted by the API worker after processing.

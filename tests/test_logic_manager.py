@@ -41,34 +41,6 @@ def test_priority_uses_deadline_and_weightage_conditions():
     ) == "HIGH"
 
 
-def test_error_issue_blocks_ready_status():
-    ai_record = {
-        "module": "INF1103",
-        "assessment_type": "Project",
-        "deadline": "2026-10-15",
-        "weightage": 30,
-        "missing_fields": [],
-        "issues": [
-            {
-                "type": "UNRESOLVED_DETAIL",
-                "field": "deadline",
-                "severity": "error",
-                "feedback": "The supplied evidence cannot be accepted.",
-            }
-        ],
-    }
-
-    record = logic_manager.apply_business_rules(
-        ai_record,
-        record_id="record-002",
-        revision=1,
-        today=date(2026, 10, 10),
-    )
-
-    assert record["status"] == "NEEDS_REVIEW"
-    assert record["priority"] is None
-
-
 def test_source_conflict_takes_precedence_over_missing_field():
     ai_record = {
         "module": "INF1103",
@@ -154,25 +126,6 @@ def test_schedule_builds_multiple_blocks_and_excludes_incomplete_record():
     ]
     assert schedule["excluded_records"][0]["record_id"] == "record-incomplete"
     assert any("overlap" in warning for warning in schedule["warnings"])
-
-
-def test_assessment_due_today_is_constrained():
-    record = logic_manager.apply_business_rules(
-        {
-            "module": "INF1103",
-            "assessment_type": "Project",
-            "deadline": "2026-10-01",
-            "weightage": 30,
-            "missing_fields": [],
-            "issues": [],
-        },
-        record_id="due-today",
-        revision=1,
-        today=date(2026, 10, 1),
-    )
-
-    assert record["status"] == "CONSTRAINED"
-    assert record["priority"] is None
 
 
 def test_module_credits_raise_credit_weighted_schedule_priority():

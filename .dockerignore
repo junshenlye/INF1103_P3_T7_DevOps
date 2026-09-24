@@ -8,3 +8,7 @@
 .DS_Store
 .Dockerfile
 tests
+frontend-demo
+data
+examples
+test_case

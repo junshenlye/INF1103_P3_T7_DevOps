@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   </head>
-  <body>
+  <body data-api-base="{{ api_base_url }}">
     <header class="site-header">
       <a class="brand" href="{{ url_for('index') }}" aria-label="Stackplan home">
         <span class="brand-mark">S</span>
@@ -36,6 +36,15 @@
           Use non-confidential images without personal data on the free AI endpoint.
         </div>
       </section>
+
+      {% if connection_error %}
+        <section class="result-banner is-error" role="alert">
+          <div>
+            <strong>Docker API is not connected</strong>
+            <span>{{ connection_error }}</span>
+          </div>
+        </section>
+      {% endif %}
 
       {% if result %}
         <section class="result-banner {% if result.ok %}is-success{% elif result.preserved %}is-warning{% else %}is-error{% endif %}" role="status">
@@ -77,7 +86,7 @@
             <span class="step-badge">AI validated</span>
           </div>
 
-          <form action="{{ url_for('process_assessment') }}" method="post" enctype="multipart/form-data" id="assessment-form">
+          <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
             <div class="field-grid">
               <label>
                 <span>Module code</span>
@@ -106,6 +115,22 @@
               <span>Extract assessment events</span>
               <span aria-hidden="true">→</span>
             </button>
+
+            <section class="progress-panel" id="extraction-progress" aria-live="polite" hidden>
+              <div class="progress-heading">
+                <div>
+                  <span class="progress-kicker">Live extraction progress</span>
+                  <strong id="progress-stage">Preparing evidence pack…</strong>
+                </div>
+                <span id="progress-elapsed">0.0s</span>
+              </div>
+              <div class="progress-track" aria-hidden="true">
+                <span id="progress-bar"></span>
+              </div>
+              <p id="progress-message">The request is being prepared.</p>
+              <ol id="progress-events" class="progress-events"></ol>
+              <p class="progress-note">Keep this tab open. Free model responses may take a while, but the timer and stages will continue updating.</p>
+            </section>
           </form>
         </article>
 

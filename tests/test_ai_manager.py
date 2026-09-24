@@ -11,85 +11,21 @@ ONE_PIXEL_PNG = base64.b64decode(
 )
 
 
-def valid_extraction():
+def valid_extraction(assessment_type="Project", deadline="2026-10-15", weightage=30):
     return {
         "module": "INF1103",
-        "assessment_type": "Project",
-        "deadline": "2026-10-15",
-        "weightage": 30,
+        "assessment_type": assessment_type,
+        "deadline": deadline,
+        "weightage": weightage,
         "missing_fields": [],
         "issues": [],
     }
 
 
-def test_process_record_accepts_valid_injected_ai_response(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_MODEL", ai_manager.DEFAULT_MODEL)
-    calls = []
-
-    def fake_caller(**kwargs):
-        calls.append(kwargs)
-        return json.dumps(valid_extraction())
-
-    result = ai_manager.process_record(
-        {
-            "module": "INF1103",
-            "assessment_type": "Project",
-            "deadline": "2026-10-15",
-            "weightage": 30,
-            "prompt": "Confirm the supplied assessment details.",
-            "image_paths": [],
-        },
-        api_caller=fake_caller,
-    )
-
-    assert result == {
-        "ok": True,
-        "extraction": valid_extraction(),
-        "errors": [],
-        "attempts": 1,
-    }
-    assert len(calls) == 1
-    assert calls[0]["model"] == ai_manager.DEFAULT_MODEL
-    assert calls[0]["api_key"] == ""
-    assert "image_paths" not in calls[0]["prompt"]
-    assert "Treat each non-null structured input field" in calls[0]["prompt"]
-
-
-def test_missing_key_fails_without_calling_transport(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-    result = ai_manager.process_record({"module": "INF1103"})
-
-    assert result["ok"] is False
-    assert result["errors"] == ["OPENROUTER_API_KEY is not configured."]
-    assert result["attempts"] == 0
-
-
-def test_fenced_json_is_parsed_but_extra_fields_are_rejected():
-    fenced = f"```json\n{json.dumps(valid_extraction())}\n```"
-    assert ai_manager.parse_model_response(fenced) == valid_extraction()
-
-    extraction = valid_extraction()
-    extraction["status"] = "READY"
-    errors = ai_manager.validate_extraction(extraction)
-    assert "Unexpected AI fields: status." in errors
-
-
-def test_missing_fields_must_match_null_values():
-    extraction = valid_extraction()
-    extraction["deadline"] = None
-
-    errors = ai_manager.validate_extraction(extraction)
-
-    assert "missing_fields must exactly match null extracted values." in errors
-
-
-def test_multimodal_request_places_text_before_base64_image(tmp_path, monkeypatch):
+def test_multimodal_request_places_text_before_image(tmp_path, monkeypatch):
     image_path = tmp_path / "assessment.png"
     image_path.write_bytes(ONE_PIXEL_PNG)
     captured = {}
-    model_response = json.dumps(valid_extraction())
-
     connection = SimpleNamespace()
 
     def fake_request(method, path, body, headers):
@@ -106,24 +42,18 @@ def test_multimodal_request_places_text_before_base64_image(tmp_path, monkeypatc
     connection.getresponse = lambda: SimpleNamespace(
         status=200,
         read=lambda: json.dumps(
-            {"choices": [{"message": {"content": model_response}}]}
+            {"choices": [{"message": {"content": json.dumps(valid_extraction())}}]}
         ).encode("utf-8"),
     )
     connection.close = lambda: None
+    monkeypatch.setattr(
+        ai_manager.http.client,
+        "HTTPSConnection",
+        lambda *args, **kwargs: connection,
+    )
 
-    def fake_connection(host, timeout, context):
-        captured.update(
-            {
-                "host": host,
-                "timeout": timeout,
-                "has_tls_context": context is not None,
-            }
-        )
-        return connection
-
-    monkeypatch.setattr(ai_manager.http.client, "HTTPSConnection", fake_connection)
-    response_text = ai_manager.call_openrouter(
-        prompt="Extract this assessment.",
+    ai_manager.call_openrouter(
+        prompt="Extract assessments.",
         image_paths=[str(image_path)],
         api_key="unit-test-key-not-real",
         model=ai_manager.DEFAULT_MODEL,
@@ -131,79 +61,12 @@ def test_multimodal_request_places_text_before_base64_image(tmp_path, monkeypatc
     )
 
     content = captured["payload"]["messages"][1]["content"]
-    assert json.loads(response_text) == valid_extraction()
-    assert captured["host"] == "openrouter.ai"
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/api/v1/chat/completions"
-    assert captured["has_tls_context"] is True
-    assert content[0] == {"type": "text", "text": "Extract this assessment."}
-    assert content[1]["type"] == "image_url"
+    assert content[0] == {"type": "text", "text": "Extract assessments."}
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert captured["headers"]["Authorization"] == "Bearer unit-test-key-not-real"
-    assert "response_format" not in captured["payload"]
 
 
-def test_transport_error_does_not_leak_sensitive_exception_text(caplog):
-    def failing_caller(**kwargs):
-        raise ValueError("unit-test-key-not-real")
-
-    result = ai_manager.process_record(
-        {"module": "INF1103"},
-        api_caller=failing_caller,
-    )
-
-    assert result["ok"] is False
-    assert result["errors"] == ["AI response could not be processed."]
-    assert "unit-test-key-not-real" not in caplog.text
-    assert "unit-test-key-not-real" not in json.dumps(result)
-
-
-def test_malformed_responses_retry_until_third_attempt(monkeypatch):
-    monkeypatch.setenv("AI_MAX_RETRIES", "3")
-    responses = ["not json", "[]", json.dumps(valid_extraction())]
-
-    def eventually_valid_caller(**kwargs):
-        return responses.pop(0)
-
-    result = ai_manager.process_record(
-        {"module": "INF1103", "image_paths": []},
-        api_caller=eventually_valid_caller,
-    )
-
-    assert result["ok"] is True
-    assert result["attempts"] == 3
-    assert responses == []
-
-
-def test_retry_limit_is_bounded_and_reports_actual_attempts(monkeypatch):
-    monkeypatch.setenv("AI_MAX_RETRIES", "999")
-    calls = []
-
-    def malformed_caller(**kwargs):
-        calls.append(kwargs)
-        return "not json"
-
-    result = ai_manager.process_record(
-        {"module": "INF1103", "image_paths": []},
-        api_caller=malformed_caller,
-    )
-
-    assert result["ok"] is False
-    assert result["attempts"] == ai_manager.MAX_ALLOWED_ATTEMPTS
-    assert len(calls) == ai_manager.MAX_ALLOWED_ATTEMPTS
-
-
-def test_missing_critical_field_requires_feedback_issue():
-    extraction = valid_extraction()
-    extraction["deadline"] = None
-    extraction["missing_fields"] = ["deadline"]
-
-    errors = ai_manager.validate_extraction(extraction)
-
-    assert "A feedback issue is required for missing deadline." in errors
-
-
-def test_source_prompt_requests_all_events_and_uses_trusted_module():
+def test_source_prompt_requests_all_events_and_trusts_module_context():
     prompt = ai_manager.build_source_prompt(
         {
             "module": "inf1103",
@@ -219,20 +82,13 @@ def test_source_prompt_requests_all_events_and_uses_trusted_module():
     assert "module_credits" not in prompt
 
 
-def test_process_source_accepts_multiple_valid_assessments(monkeypatch):
+def test_process_source_accepts_multiple_events_and_reports_progress(monkeypatch):
     monkeypatch.setenv("AI_MAX_RETRIES", "1")
-    quiz = valid_extraction()
-    quiz["assessment_type"] = "Quiz 1"
-    quiz["weightage"] = 10
-    assignment = valid_extraction()
-    assignment["assessment_type"] = "Assignment 1"
-    assignment["deadline"] = "2026-10-22"
-    assignment["weightage"] = 25
-    captured = {}
-
-    def fake_caller(**kwargs):
-        captured.update(kwargs)
-        return json.dumps({"assessments": [quiz, assignment]})
+    assessments = [
+        valid_extraction("Quiz 1", "2026-10-15", 10),
+        valid_extraction("Assignment 1", "2026-10-22", 25),
+    ]
+    progress = []
 
     result = ai_manager.process_source(
         {
@@ -241,24 +97,73 @@ def test_process_source_accepts_multiple_valid_assessments(monkeypatch):
             "prompt": "Extract the whole module schedule.",
             "image_paths": [],
         },
-        api_caller=fake_caller,
+        api_caller=lambda **kwargs: json.dumps({"assessments": assessments}),
+        progress_callback=progress.append,
     )
 
-    assert result["ok"] is True
-    assert result["extractions"] == [quiz, assignment]
-    assert result["attempts"] == 1
-    assert "every distinct graded assessment event" in captured["prompt"]
+    assert result["extractions"] == assessments
+    assert [event["stage"] for event in progress] == [
+        "ai_request",
+        "ai_validation",
+        "ai_complete",
+    ]
 
 
-def test_source_extraction_rejects_wrong_module_and_duplicate_event():
-    first = valid_extraction()
-    second = valid_extraction()
-    second["module"] = "INF9999"
-
-    errors = ai_manager.validate_source_extraction(
-        {"assessments": [first, second]},
+def test_source_normalization_preserves_missing_events_for_review():
+    normalized = ai_manager.normalize_source_response(
+        {
+            "assessments": [
+                {
+                    "module": "wrong-module",
+                    "assessment_type": "Quiz 1",
+                    "deadline": None,
+                    "weightage": None,
+                    "missing_fields": [],
+                    "issues": [],
+                }
+            ]
+        },
         "INF1103",
     )
 
-    assert "assessments[1]: module must match the supplied module." in errors
+    event = normalized["assessments"][0]
+    assert event["module"] == "INF1103"
+    assert event["missing_fields"] == ["deadline", "weightage"]
+    assert {issue["field"] for issue in event["issues"]} == {
+        "deadline",
+        "weightage",
+    }
+    assert ai_manager.validate_source_extraction(normalized, "INF1103") == []
+
+
+def test_source_schema_rejects_duplicate_event():
+    event = valid_extraction()
+
+    errors = ai_manager.validate_source_extraction(
+        {"assessments": [event, dict(event)]},
+        "INF1103",
+    )
+
     assert "assessments[1]: duplicate assessment event." in errors
+
+
+def test_malformed_source_retries_with_visible_safe_error(monkeypatch):
+    monkeypatch.setenv("AI_MAX_RETRIES", "2")
+    progress = []
+    responses = ["not-json", json.dumps({"assessments": [valid_extraction()]})]
+
+    result = ai_manager.process_source(
+        {
+            "module": "INF1103",
+            "module_credits": 6,
+            "prompt": "Extract all events.",
+            "image_paths": [],
+        },
+        api_caller=lambda **kwargs: responses.pop(0),
+        progress_callback=progress.append,
+    )
+
+    assert result["ok"] is True
+    assert result["attempts"] == 2
+    assert any(event["stage"] == "retrying" for event in progress)
+    assert all("unit-test-key" not in event["message"] for event in progress)

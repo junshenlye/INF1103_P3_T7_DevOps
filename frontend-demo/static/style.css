@@ -418,6 +418,117 @@ textarea:focus {
   cursor: wait;
 }
 
+.progress-panel {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid rgba(33, 93, 69, 0.25);
+  border-radius: 12px;
+  background: #f3f7ee;
+}
+
+.progress-panel[hidden] {
+  display: none;
+}
+
+.progress-panel.is-failed {
+  border-color: rgba(212, 92, 77, 0.45);
+  background: #fff0ed;
+}
+
+.progress-panel.is-complete {
+  border-color: rgba(33, 93, 69, 0.4);
+  background: #ecf7ef;
+}
+
+.progress-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.progress-heading strong,
+.progress-kicker {
+  display: block;
+}
+
+.progress-kicker {
+  margin-bottom: 3px;
+  color: var(--green);
+  font-size: 0.63rem;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.progress-heading strong {
+  font-size: 0.92rem;
+}
+
+#progress-elapsed {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.progress-track {
+  height: 5px;
+  margin-top: 13px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dce5db;
+}
+
+.progress-track span {
+  width: 8%;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 300ms ease;
+}
+
+#progress-message {
+  margin: 12px 0 0;
+  color: #425048;
+  font-size: 0.8rem;
+}
+
+.progress-events {
+  max-height: 170px;
+  margin: 13px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.progress-events li {
+  padding: 7px 9px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  border-left: 3px solid #bdc9bf;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.progress-events time {
+  color: var(--green-dark);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.progress-note {
+  margin: 12px 0 0;
+  color: #7b857e;
+  font-size: 0.7rem;
+}
+
 .panel-copy {
   margin: -10px 0 24px;
   color: var(--muted);
