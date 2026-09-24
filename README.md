@@ -37,6 +37,7 @@ frontend-demo/        host-run presentation only
 
 `data_manager.py` uses PostgreSQL when Docker supplies `DATABASE_URL`. The CLI
 continues to use JSON, so the graded procedural core does not require Docker.
+Those local JSON files are created under the Git-ignored `data/` directory.
 
 ## Run
 
