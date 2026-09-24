@@ -92,6 +92,45 @@ def save_record_revision(record: Dict[str, Any], data_file: str) -> bool:
     return save_records(records, data_file)
 
 
+def save_record_revisions(records_to_add: List[Dict[str, Any]], data_file: str) -> bool:
+    """Atomically append multiple valid revisions or append none of them."""
+    if not isinstance(records_to_add, list) or not records_to_add:
+        LOGGER.error("Refused an empty bulk record save")
+        return False
+    if any(contracts.validate_record_contract(record) for record in records_to_add):
+        LOGGER.error("Refused bulk records that violate the frozen contract")
+        return False
+
+    existing_records, load_error = _load_records_for_update(data_file)
+    if load_error:
+        LOGGER.error(
+            "Refused to overwrite unsafe data file %s: %s",
+            data_file,
+            load_error,
+        )
+        return False
+
+    combined_records = list(existing_records)
+    for record in records_to_add:
+        if any(
+            existing["record_id"] == record["record_id"]
+            and existing["revision"] == record["revision"]
+            for existing in combined_records
+        ):
+            LOGGER.error("Refused a duplicate record revision in bulk save")
+            return False
+        expected_revision = next_revision(combined_records, record["record_id"])
+        if record["revision"] != expected_revision:
+            LOGGER.error(
+                "Refused bulk revision %s; expected revision %s",
+                record["revision"],
+                expected_revision,
+            )
+            return False
+        combined_records.append(record)
+    return save_records(combined_records, data_file)
+
+
 def get_record_history(
     records: List[Dict[str, Any]],
     record_id: str,

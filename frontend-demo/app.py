@@ -34,6 +34,7 @@ def render_dashboard(result=None, form_values=None, status_code=200):
             "index.html",
             schedule=summary["schedule"],
             module_profiles=summary["module_profiles"],
+            latest_records=summary["latest_records"],
             records_loaded=summary["records_loaded"],
             result=result,
             form_values=form_values or {},
@@ -76,7 +77,7 @@ def index():
 
 @app.post("/process")
 def process_assessment():
-    """Adapt one multipart form submission to the procedural core."""
+    """Adapt one module evidence pack to the multi-event procedural core."""
     form_values = request.form.to_dict()
     conversion_errors = []
     module_credits = parse_optional_number(
@@ -84,15 +85,11 @@ def process_assessment():
         "Module credits",
         conversion_errors,
     )
-    weightage = parse_optional_number(
-        request.form.get("weightage"),
-        "Weightage",
-        conversion_errors,
-    )
     if conversion_errors:
         result = {
             "ok": False,
-            "record": None,
+            "records": [],
+            "extracted_count": 0,
             "errors": conversion_errors,
             "ai_attempts": 0,
         }
@@ -106,16 +103,45 @@ def process_assessment():
         input_record = {
             "module": request.form.get("module", ""),
             "module_credits": module_credits,
-            "assessment_type": request.form.get("assessment_type", ""),
-            "deadline": request.form.get("deadline") or None,
-            "weightage": weightage,
             "prompt": request.form.get("prompt", ""),
             "image_paths": image_paths,
         }
-        result = core_main.process_assessment(input_record)
+        result = core_main.process_assessment_source(input_record)
 
     status_code = 200 if result.get("ok") or result.get("preserved") else 400
-    return render_dashboard(result, form_values, status_code=status_code)
+    retained_values = {} if result.get("ok") else form_values
+    return render_dashboard(result, retained_values, status_code=status_code)
+
+
+@app.post("/review/<record_id>")
+def review_assessment(record_id):
+    """Adapt human review fields to a deterministic appended revision."""
+    conversion_errors = []
+    weightage = parse_optional_number(
+        request.form.get("weightage"),
+        "Weightage",
+        conversion_errors,
+    )
+    if conversion_errors:
+        result = {
+            "ok": False,
+            "record": None,
+            "errors": conversion_errors,
+            "ai_attempts": 0,
+        }
+        return render_dashboard(result, status_code=400)
+
+    updates = {
+        "assessment_type": request.form.get("assessment_type", ""),
+    }
+    deadline = request.form.get("deadline", "").strip()
+    if deadline:
+        updates["deadline"] = deadline
+    if request.form.get("weightage", "").strip():
+        updates["weightage"] = weightage
+    result = core_main.correct_assessment(record_id, updates)
+    status_code = 200 if result.get("ok") else 400
+    return render_dashboard(result, status_code=status_code)
 
 
 @app.get("/api/schedule")

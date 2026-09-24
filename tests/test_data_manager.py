@@ -142,3 +142,30 @@ def test_corrupt_module_profiles_are_not_overwritten(tmp_path):
 
     assert saved is False
     assert module_file.read_text(encoding="utf-8") == "not-json"
+
+
+def test_bulk_append_saves_all_records_in_one_store_update(tmp_path):
+    data_file = tmp_path / "schedules.json"
+    first = build_record("record-001", "INF1103", "READY")
+    second = build_record("record-002", "INF1103", "READY")
+
+    saved = data_manager.save_record_revisions([first, second], str(data_file))
+
+    assert saved is True
+    assert data_manager.load_records(str(data_file)) == [first, second]
+
+
+def test_bulk_append_rejects_entire_set_when_one_revision_is_invalid(tmp_path):
+    data_file = tmp_path / "schedules.json"
+    existing = build_record("record-001", "INF1103", "READY")
+    assert data_manager.save_records([existing], str(data_file)) is True
+    valid = build_record("record-002", "INF1103", "READY")
+    invalid = build_record("record-001", "INF1103", "READY")
+
+    saved = data_manager.save_record_revisions(
+        [valid, invalid],
+        str(data_file),
+    )
+
+    assert saved is False
+    assert data_manager.load_records(str(data_file)) == [existing]

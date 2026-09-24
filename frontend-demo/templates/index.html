@@ -27,8 +27,8 @@
           <p class="eyebrow">Academic workload, made visible</p>
           <h1>Turn module evidence into a schedule you can act on.</h1>
           <p class="hero-copy">
-            Drop screenshots, add context, and let the procedural core validate
-            each assessment before it reaches your weekly plan.
+            Name the module once, drop its assessment snapshots, and let the AI
+            extract every quiz, assignment, project, and submission it can find.
           </p>
         </div>
         <div class="hero-note">
@@ -42,14 +42,20 @@
           <div>
             <strong>
               {% if result.ok %}
-                Assessment processed
+                {% if result.extracted_count %}
+                  {{ result.extracted_count }} assessment{% if result.extracted_count != 1 %}s{% endif %} extracted
+                {% else %}
+                  Assessment correction saved
+                {% endif %}
               {% elif result.preserved %}
                 Input preserved for review
               {% else %}
-                Assessment needs attention
+                Evidence pack needs attention
               {% endif %}
             </strong>
-            {% if result.record %}
+            {% if result.source_module %}
+              <span>{{ result.source_module }} · {{ result.ai_attempts }} AI attempt{% if result.ai_attempts != 1 %}s{% endif %}</span>
+            {% elif result.record %}
               <span>{{ result.record.module }} · {{ result.record.assessment_type }} · {{ result.record.status }}</span>
             {% endif %}
           </div>
@@ -65,8 +71,8 @@
         <article class="panel input-panel">
           <div class="section-heading">
             <div>
-              <p class="eyebrow">New assessment</p>
-              <h2>Add evidence and context</h2>
+              <p class="eyebrow">Module evidence pack</p>
+              <h2>Extract every assessment</h2>
             </div>
             <span class="step-badge">AI validated</span>
           </div>
@@ -81,38 +87,23 @@
                 <span>Module credits</span>
                 <input name="module_credits" value="{{ form_values.get('module_credits', '') }}" type="number" min="0.5" max="60" step="0.5" placeholder="6" required>
               </label>
-              <label>
-                <span>Assessment</span>
-                <input name="assessment_type" value="{{ form_values.get('assessment_type', '') }}" placeholder="Procedural Project" maxlength="120" required>
-              </label>
-              <label>
-                <span>Assessment weightage</span>
-                <div class="input-suffix">
-                  <input name="weightage" value="{{ form_values.get('weightage', '') }}" type="number" min="0" max="100" step="0.5" placeholder="30">
-                  <span>%</span>
-                </div>
-              </label>
-              <label class="span-two">
-                <span>Exact deadline <small>optional when the source is unclear</small></span>
-                <input name="deadline" value="{{ form_values.get('deadline', '') }}" type="date">
-              </label>
             </div>
 
             <label class="prompt-field">
-              <span>Context prompt</span>
-              <textarea name="prompt" rows="4" maxlength="4000" placeholder="Tell the AI what the screenshot represents, or clarify a date that the source only describes as a teaching week.">{{ form_values.get('prompt', '') }}</textarea>
+              <span>Extra context <small>optional when the snapshots are clear</small></span>
+              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: the dates shown are for Trimester 2, or Week 8 starts on 12 October.">{{ form_values.get('prompt', '') }}</textarea>
             </label>
 
             <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
               <input id="source-files" name="source_files" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
               <div class="drop-icon" aria-hidden="true">↥</div>
-              <strong>Drop module screenshots here</strong>
-              <span>or click to browse · PNG, JPEG, WEBP, GIF · 10 MB each</span>
+              <strong>Drop all snapshots for this module</strong>
+              <span>The AI reads them together · PNG, JPEG, WEBP, GIF · 10 MB each</span>
               <div id="file-list" class="file-list" aria-live="polite"></div>
             </div>
 
             <button class="primary-button" type="submit">
-              <span>Process assessment</span>
+              <span>Extract assessment events</span>
               <span aria-hidden="true">→</span>
             </button>
           </form>
@@ -126,8 +117,8 @@
             </div>
           </div>
           <p class="panel-copy">
-            Credit-weighted load is assessment weightage × module credits. It can
-            raise a block's schedule priority without changing the saved record contract.
+            Add each module once. Every extracted event joins the same workload,
+            where urgency, assessment weight, and module credits compete globally.
           </p>
           <div class="module-list">
             {% if module_profiles %}
@@ -138,7 +129,7 @@
                 </div>
               {% endfor %}
             {% else %}
-              <div class="empty-compact">Add your first assessment to track module credits.</div>
+              <div class="empty-compact">Import the first module evidence pack to begin.</div>
             {% endif %}
           </div>
           <div class="formula-card">
@@ -147,6 +138,72 @@
             <small>Priority is normalized against a six-credit module.</small>
           </div>
         </aside>
+      </section>
+
+      <section class="review-section">
+        <div class="schedule-heading">
+          <div>
+            <p class="eyebrow">Extraction review</p>
+            <h2>Assessments found across modules</h2>
+            <p>The AI fills these fields. Open a card only when an extracted value needs human correction.</p>
+          </div>
+          <span class="review-count">{{ latest_records|length }} current event{% if latest_records|length != 1 %}s{% endif %}</span>
+        </div>
+
+        {% if latest_records %}
+          <div class="assessment-review-grid">
+            {% for record in latest_records %}
+              <article class="review-card status-{{ record.status|lower }}">
+                <div class="review-card-heading">
+                  <div>
+                    <span class="module-code">{{ record.module }}</span>
+                    <h3>{{ record.assessment_type }}</h3>
+                  </div>
+                  <span class="record-status">{{ record.status|replace('_', ' ') }}</span>
+                </div>
+                <dl class="review-facts">
+                  <div><dt>Deadline</dt><dd>{{ record.deadline or 'Missing' }}</dd></div>
+                  <div><dt>Weight</dt><dd>{% if record.weightage is not none %}{{ record.weightage|round(1) }}%{% else %}Missing{% endif %}</dd></div>
+                  <div><dt>Priority</dt><dd>{{ record.priority or 'Pending' }}</dd></div>
+                </dl>
+
+                {% if record.issues %}
+                  <ul class="record-issues">
+                    {% for issue in record.issues %}<li>{{ issue.feedback }}</li>{% endfor %}
+                  </ul>
+                {% endif %}
+
+                <details class="correction-panel" {% if record.status != 'READY' %}open{% endif %}>
+                  <summary>Review or correct extraction</summary>
+                  <form action="{{ url_for('review_assessment', record_id=record.record_id) }}" method="post">
+                    <label>
+                      <span>Assessment</span>
+                      <input name="assessment_type" value="{{ record.assessment_type }}" maxlength="120" required>
+                    </label>
+                    <label>
+                      <span>Deadline</span>
+                      <input name="deadline" value="{{ record.deadline or '' }}" type="date">
+                    </label>
+                    <label>
+                      <span>Weightage</span>
+                      <div class="input-suffix">
+                        <input name="weightage" value="{{ record.weightage if record.weightage is not none else '' }}" type="number" min="0" max="100" step="0.5">
+                        <span>%</span>
+                      </div>
+                    </label>
+                    <button class="secondary-button" type="submit">Save reviewed values</button>
+                  </form>
+                </details>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-schedule compact-empty">
+            <span>AI</span>
+            <h3>No assessments extracted yet</h3>
+            <p>Upload one module's snapshots above. A single evidence pack can create many events.</p>
+          </div>
+        {% endif %}
       </section>
 
       <section class="schedule-section">
@@ -202,7 +259,7 @@
           <div class="empty-schedule">
             <span>01</span>
             <h3>Your schedule will appear here</h3>
-            <p>Add a complete assessment with a future deadline to create the first preparation block.</p>
+            <p>Extract a module evidence pack with future deadlines to create the first preparation blocks.</p>
           </div>
         {% endif %}
 

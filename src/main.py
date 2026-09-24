@@ -54,6 +54,7 @@ def start_application(
     latest = data_manager.latest_records(records)
     return {
         "records": records,
+        "latest_records": latest,
         "records_loaded": len(records),
         "data_file": resolved_data_file,
         "module_profiles": module_profiles,
@@ -188,6 +189,131 @@ def process_assessment(
     }
 
 
+def process_assessment_source(
+    input_source: Dict[str, Any],
+    data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
+    api_caller: Optional[Callable[..., str]] = None,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Extract and atomically persist all events from one module evidence pack."""
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    source_errors = io_manager.validate_source_input(input_source)
+    source_module = (
+        input_source.get("module", "").strip().upper()
+        if isinstance(input_source, dict)
+        and isinstance(input_source.get("module"), str)
+        else ""
+    )
+    if source_errors:
+        return {
+            "ok": False,
+            "records": [],
+            "extracted_count": 0,
+            "source_module": source_module,
+            "errors": source_errors,
+            "ai_attempts": 0,
+            "preserved": False,
+        }
+
+    resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
+    if not data_manager.save_module_profile(
+        source_module,
+        input_source["module_credits"],
+        resolved_module_file,
+    ):
+        return {
+            "ok": False,
+            "records": [],
+            "extracted_count": 0,
+            "source_module": source_module,
+            "errors": ["Module credit metadata could not be saved."],
+            "ai_attempts": 0,
+            "preserved": False,
+        }
+
+    normalized_source = dict(input_source)
+    normalized_source["module"] = source_module
+    ai_result = ai_manager.process_source(
+        normalized_source,
+        api_caller=api_caller,
+    )
+    if not ai_result["ok"]:
+        return {
+            "ok": False,
+            "records": [],
+            "extracted_count": 0,
+            "source_module": source_module,
+            "errors": ai_result["errors"],
+            "ai_attempts": ai_result["attempts"],
+            "preserved": False,
+        }
+
+    existing_records = data_manager.load_records(resolved_data_file)
+    used_record_ids = {record["record_id"] for record in existing_records}
+    final_records = []
+    contract_errors = []
+    for index, extraction in enumerate(ai_result["extractions"]):
+        record_id = data_manager.generate_record_id()
+        while record_id in used_record_ids:
+            record_id = data_manager.generate_record_id()
+        used_record_ids.add(record_id)
+        final_record = logic_manager.apply_business_rules(
+            extraction,
+            record_id=record_id,
+            revision=1,
+            today=today,
+        )
+        item_errors = contracts.validate_record_contract(final_record)
+        contract_errors.extend(
+            f"assessments[{index}]: {error}" for error in item_errors
+        )
+        final_records.append(final_record)
+
+    if contract_errors:
+        logging.error(
+            "Multi-event logic output failed the frozen contract: %s",
+            contract_errors,
+        )
+        return {
+            "ok": False,
+            "records": [],
+            "extracted_count": 0,
+            "source_module": source_module,
+            "errors": contract_errors,
+            "ai_attempts": ai_result["attempts"],
+            "preserved": False,
+        }
+
+    if not data_manager.save_record_revisions(final_records, resolved_data_file):
+        return {
+            "ok": False,
+            "records": [],
+            "extracted_count": 0,
+            "source_module": source_module,
+            "errors": ["Extracted assessments could not be saved."],
+            "ai_attempts": ai_result["attempts"],
+            "preserved": False,
+        }
+
+    schedule = build_current_schedule(
+        resolved_data_file,
+        today=today,
+        module_file=resolved_module_file,
+    )
+    return {
+        "ok": True,
+        "records": final_records,
+        "extracted_count": len(final_records),
+        "source_module": source_module,
+        "errors": [],
+        "ai_attempts": ai_result["attempts"],
+        "preserved": False,
+        "schedule": schedule,
+    }
+
+
 def build_current_schedule(
     data_file: str,
     today: Optional[date] = None,
@@ -204,6 +330,89 @@ def build_current_schedule(
         today=today,
         module_profiles=module_profiles,
     )
+
+
+def correct_assessment(
+    record_id: str,
+    updates: Dict[str, Any],
+    data_file: Optional[str] = None,
+    module_file: Optional[str] = None,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Append one deterministic human-reviewed revision without another AI call."""
+    correction_errors = io_manager.validate_correction_input(updates)
+    if correction_errors:
+        return {
+            "ok": False,
+            "record": None,
+            "errors": correction_errors,
+            "preserved": False,
+        }
+
+    resolved_data_file = resolve_data_file_path(data_file)
+    resolved_module_file = resolve_module_file_path(module_file)
+    records = data_manager.load_records(resolved_data_file)
+    latest = data_manager.get_latest_record(records, record_id)
+    if latest is None:
+        return {
+            "ok": False,
+            "record": None,
+            "errors": [f"Record ID was not found: {record_id}"],
+            "preserved": False,
+        }
+
+    corrected_fields = {
+        field
+        for field, value in updates.items()
+        if value is not None
+    }
+    extraction = {
+        "module": latest["module"],
+        "assessment_type": updates.get(
+            "assessment_type",
+            latest["assessment_type"],
+        ),
+        "deadline": updates.get("deadline", latest["deadline"]),
+        "weightage": updates.get("weightage", latest["weightage"]),
+        "issues": [
+            issue
+            for issue in latest["issues"]
+            if issue.get("field") not in corrected_fields
+        ],
+    }
+    corrected_record = logic_manager.apply_business_rules(
+        extraction,
+        record_id=record_id,
+        revision=data_manager.next_revision(records, record_id),
+        today=today,
+    )
+    contract_errors = contracts.validate_record_contract(corrected_record)
+    if contract_errors:
+        return {
+            "ok": False,
+            "record": None,
+            "errors": contract_errors,
+            "preserved": False,
+        }
+    if not data_manager.save_record_revision(corrected_record, resolved_data_file):
+        return {
+            "ok": False,
+            "record": None,
+            "errors": ["The corrected assessment could not be saved."],
+            "preserved": False,
+        }
+
+    return {
+        "ok": True,
+        "record": corrected_record,
+        "errors": [],
+        "preserved": False,
+        "schedule": build_current_schedule(
+            resolved_data_file,
+            today=today,
+            module_file=resolved_module_file,
+        ),
+    }
 
 
 def reprocess_assessment(

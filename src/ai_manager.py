@@ -18,6 +18,7 @@ DEFAULT_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MAX_ATTEMPTS = 3
 MAX_ALLOWED_ATTEMPTS = 5
+MAX_EXTRACTED_ASSESSMENTS = 30
 EXTRACTION_FIELDS = (
     "module",
     "assessment_type",
@@ -60,6 +61,47 @@ def build_prompt(input_record: Dict[str, Any]) -> str:
         "must be info, warning, or error.\n"
         f"Example shape: {json.dumps(schema_example, separators=(',', ':'))}\n"
         f"Input record: {json.dumps(prompt_input, ensure_ascii=False)}"
+    )
+
+
+def build_source_prompt(input_source: Dict[str, Any]) -> str:
+    """Build the one-to-many extraction prompt for a module evidence pack."""
+    module = input_source["module"].strip().upper()
+    source_context = {
+        "module": module,
+        "prompt": input_source.get("prompt", ""),
+        "attached_image_count": len(input_source.get("image_paths", [])),
+    }
+    assessment_example = {
+        "module": module,
+        "assessment_type": "Quiz 1",
+        "deadline": "2026-10-15",
+        "weightage": 10,
+        "missing_fields": [],
+        "issues": [],
+    }
+    response_example = {"assessments": [assessment_example]}
+    return (
+        "Inspect all supplied images and context as one module evidence pack.\n"
+        "Find every distinct graded assessment event visible or explicitly "
+        "described, including quizzes, assignments, projects, presentations, "
+        "practical tests, exams, and submission milestones.\n"
+        "Return exactly one JSON object with exactly one key: assessments. "
+        "assessments must be a non-empty JSON list with one object per event.\n"
+        f"Return at most {MAX_EXTRACTED_ASSESSMENTS} events and do not duplicate "
+        "the same event across images.\n"
+        f"The module is a trusted user fact. Every event must use exactly {module}.\n"
+        f"Each event must use exactly these keys: {', '.join(EXTRACTION_FIELDS)}.\n"
+        "Do not calculate status, priority, preparation dates, or module credits.\n"
+        "Do not invent missing information. Use null for a missing deadline or "
+        "weightage and list its field name in missing_fields.\n"
+        "Dates must use YYYY-MM-DD only when an exact calendar date is supplied. "
+        "A teaching-week label without an academic calendar must become null.\n"
+        "Each issue must contain type, field, severity, and feedback. Severity "
+        "must be info, warning, or error. Conflicting source values must be "
+        "reported as an error issue instead of silently choosing one.\n"
+        f"Example shape: {json.dumps(response_example, separators=(',', ':'))}\n"
+        f"Source context: {json.dumps(source_context, ensure_ascii=False)}"
     )
 
 
@@ -124,7 +166,7 @@ def call_openrouter(
                 },
             ],
             "temperature": 0,
-            "max_tokens": 800,
+            "max_tokens": 3000,
         }
     ).encode("utf-8")
     headers = {
@@ -257,6 +299,137 @@ def validate_extraction(extraction: Dict[str, Any]) -> List[str]:
                     )
 
     return errors
+
+
+def validate_source_extraction(
+    response: Dict[str, Any],
+    expected_module: str,
+) -> List[str]:
+    """Validate one model response containing many assessment events."""
+    if not isinstance(response, dict):
+        return ["AI source extraction must be a dictionary."]
+    if set(response) != {"assessments"}:
+        return ["AI source extraction must contain only assessments."]
+
+    assessments = response["assessments"]
+    if not isinstance(assessments, list) or not assessments:
+        return ["AI source extraction must contain at least one assessment."]
+    if len(assessments) > MAX_EXTRACTED_ASSESSMENTS:
+        return [
+            "AI source extraction exceeded the assessment event limit of "
+            f"{MAX_EXTRACTED_ASSESSMENTS}."
+        ]
+
+    errors = []
+    seen_events = set()
+    normalized_module = expected_module.strip().upper()
+    for index, assessment in enumerate(assessments):
+        item_errors = validate_extraction(assessment)
+        errors.extend(
+            f"assessments[{index}]: {error}" for error in item_errors
+        )
+        if item_errors:
+            continue
+        if assessment["module"].strip().upper() != normalized_module:
+            errors.append(
+                f"assessments[{index}]: module must match the supplied module."
+            )
+        event_key = (
+            assessment["assessment_type"].strip().casefold(),
+            assessment["deadline"],
+            assessment["weightage"],
+        )
+        if event_key in seen_events:
+            errors.append(f"assessments[{index}]: duplicate assessment event.")
+        seen_events.add(event_key)
+    return errors
+
+
+def process_source(
+    input_source: Dict[str, Any],
+    api_caller: Optional[Callable[..., str]] = None,
+) -> Dict[str, Any]:
+    """Extract and validate every assessment in one module evidence pack."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    base_url = (
+        os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip()
+        or DEFAULT_BASE_URL
+    )
+
+    if api_caller is None and not api_key:
+        return {
+            "ok": False,
+            "extractions": [],
+            "errors": ["OPENROUTER_API_KEY is not configured."],
+            "attempts": 0,
+        }
+    if api_caller is None and base_url.rstrip("/") != DEFAULT_BASE_URL:
+        return {
+            "ok": False,
+            "extractions": [],
+            "errors": ["OPENROUTER_BASE_URL must use the official HTTPS endpoint."],
+            "attempts": 0,
+        }
+
+    caller = api_caller or call_openrouter
+    caller_api_key = api_key if api_caller is None else ""
+    max_attempts = _read_max_attempts()
+    last_errors = ["AI response could not be processed."]
+
+    for attempt in range(1, max_attempts + 1):
+        LOGGER.info("AI source request attempt %s using model %s", attempt, model)
+        try:
+            response_text = caller(
+                prompt=build_source_prompt(input_source),
+                image_paths=list(input_source.get("image_paths", [])),
+                api_key=caller_api_key,
+                model=model,
+                base_url=base_url,
+            )
+            response = parse_model_response(response_text)
+            schema_errors = validate_source_extraction(
+                response,
+                input_source["module"],
+            )
+        except (
+            OSError,
+            http.client.HTTPException,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            last_errors = [_safe_processing_error(error)]
+            LOGGER.error(
+                "AI source request or parsing failed on attempt %s: %s",
+                attempt,
+                last_errors[0],
+            )
+            continue
+
+        if schema_errors:
+            last_errors = schema_errors
+            LOGGER.error(
+                "AI source response failed schema validation on attempt %s: %s",
+                attempt,
+                schema_errors,
+            )
+            continue
+
+        return {
+            "ok": True,
+            "extractions": response["assessments"],
+            "errors": [],
+            "attempts": attempt,
+        }
+
+    return {
+        "ok": False,
+        "extractions": [],
+        "errors": last_errors,
+        "attempts": max_attempts,
+    }
 
 
 def process_record(

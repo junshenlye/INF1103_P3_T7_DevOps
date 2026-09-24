@@ -25,6 +25,17 @@ ASSESSMENT_INPUT_FIELDS = {
     "prompt",
     "image_paths",
 }
+SOURCE_INPUT_FIELDS = {
+    "module",
+    "module_credits",
+    "prompt",
+    "image_paths",
+}
+CORRECTION_INPUT_FIELDS = {
+    "assessment_type",
+    "deadline",
+    "weightage",
+}
 
 
 def parse_cli_arguments(argv: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -139,6 +150,92 @@ def validate_user_input(payload: Dict[str, Any]) -> List[str]:
     else:
         for image_path in image_paths:
             errors.extend(_validate_image_path(image_path))
+    return errors
+
+
+def validate_source_input(payload: Dict[str, Any]) -> List[str]:
+    """Validate one module evidence pack for multi-event extraction."""
+    if not isinstance(payload, dict):
+        return ["Module evidence must be a JSON object."]
+
+    errors = []
+    unexpected_fields = sorted(set(payload) - SOURCE_INPUT_FIELDS)
+    if unexpected_fields:
+        errors.append(f"Unexpected source fields: {', '.join(unexpected_fields)}.")
+
+    module = payload.get("module")
+    if not isinstance(module, str) or not module.strip():
+        errors.append("Module is required.")
+    elif len(module.strip()) > MAX_MODULE_CHARS:
+        errors.append(f"Module may contain at most {MAX_MODULE_CHARS} characters.")
+
+    module_credits = payload.get("module_credits")
+    if isinstance(module_credits, bool) or not isinstance(
+        module_credits, (int, float)
+    ):
+        errors.append("Module credits are required and must be a number.")
+    elif not 0 < module_credits <= 60:
+        errors.append("Module credits must be greater than 0 and at most 60.")
+
+    prompt = payload.get("prompt", "")
+    if not isinstance(prompt, str):
+        errors.append("Prompt must be text.")
+    elif len(prompt) > MAX_PROMPT_CHARS:
+        errors.append(f"Prompt may contain at most {MAX_PROMPT_CHARS} characters.")
+
+    image_paths = payload.get("image_paths", [])
+    if not isinstance(image_paths, list):
+        errors.append("Images must be supplied as a list of paths.")
+        image_paths = []
+    else:
+        for image_path in image_paths:
+            errors.extend(_validate_image_path(image_path))
+
+    if isinstance(prompt, str) and not prompt.strip() and not image_paths:
+        errors.append("Add at least one screenshot or a context prompt.")
+    return errors
+
+
+def validate_correction_input(payload: Dict[str, Any]) -> List[str]:
+    """Validate deterministic review edits for one extracted assessment."""
+    if not isinstance(payload, dict):
+        return ["Assessment corrections must be a JSON object."]
+
+    errors = []
+    unexpected_fields = sorted(set(payload) - CORRECTION_INPUT_FIELDS)
+    if unexpected_fields:
+        errors.append(f"Unexpected correction fields: {', '.join(unexpected_fields)}.")
+    if not payload:
+        errors.append("At least one assessment correction is required.")
+
+    assessment_type = payload.get("assessment_type")
+    if "assessment_type" in payload:
+        if not isinstance(assessment_type, str) or not assessment_type.strip():
+            errors.append("Assessment type is required.")
+        elif len(assessment_type.strip()) > MAX_ASSESSMENT_TYPE_CHARS:
+            errors.append(
+                f"Assessment type may contain at most {MAX_ASSESSMENT_TYPE_CHARS} "
+                "characters."
+            )
+
+    deadline = payload.get("deadline")
+    if deadline is not None:
+        if not isinstance(deadline, str):
+            errors.append("Deadline must be a string or omitted.")
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline) is None:
+            errors.append("Deadline must use YYYY-MM-DD format.")
+        else:
+            try:
+                date.fromisoformat(deadline)
+            except ValueError:
+                errors.append("Deadline must use YYYY-MM-DD format.")
+
+    weightage = payload.get("weightage")
+    if weightage is not None:
+        if isinstance(weightage, bool) or not isinstance(weightage, (int, float)):
+            errors.append("Weightage must be a number or omitted.")
+        elif not 0 <= weightage <= 100:
+            errors.append("Weightage must be between 0 and 100.")
     return errors
 
 

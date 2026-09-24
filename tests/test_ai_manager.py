@@ -201,3 +201,64 @@ def test_missing_critical_field_requires_feedback_issue():
     errors = ai_manager.validate_extraction(extraction)
 
     assert "A feedback issue is required for missing deadline." in errors
+
+
+def test_source_prompt_requests_all_events_and_uses_trusted_module():
+    prompt = ai_manager.build_source_prompt(
+        {
+            "module": "inf1103",
+            "module_credits": 12,
+            "prompt": "The images are from Trimester 2.",
+            "image_paths": ["one.png", "two.png"],
+        }
+    )
+
+    assert "every distinct graded assessment event" in prompt
+    assert "Every event must use exactly INF1103" in prompt
+    assert '"attached_image_count": 2' in prompt
+    assert "module_credits" not in prompt
+
+
+def test_process_source_accepts_multiple_valid_assessments(monkeypatch):
+    monkeypatch.setenv("AI_MAX_RETRIES", "1")
+    quiz = valid_extraction()
+    quiz["assessment_type"] = "Quiz 1"
+    quiz["weightage"] = 10
+    assignment = valid_extraction()
+    assignment["assessment_type"] = "Assignment 1"
+    assignment["deadline"] = "2026-10-22"
+    assignment["weightage"] = 25
+    captured = {}
+
+    def fake_caller(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"assessments": [quiz, assignment]})
+
+    result = ai_manager.process_source(
+        {
+            "module": "INF1103",
+            "module_credits": 6,
+            "prompt": "Extract the whole module schedule.",
+            "image_paths": [],
+        },
+        api_caller=fake_caller,
+    )
+
+    assert result["ok"] is True
+    assert result["extractions"] == [quiz, assignment]
+    assert result["attempts"] == 1
+    assert "every distinct graded assessment event" in captured["prompt"]
+
+
+def test_source_extraction_rejects_wrong_module_and_duplicate_event():
+    first = valid_extraction()
+    second = valid_extraction()
+    second["module"] = "INF9999"
+
+    errors = ai_manager.validate_source_extraction(
+        {"assessments": [first, second]},
+        "INF1103",
+    )
+
+    assert "assessments[1]: module must match the supplied module." in errors
+    assert "assessments[1]: duplicate assessment event." in errors

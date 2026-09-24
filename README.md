@@ -152,9 +152,37 @@ python -m src.main \
 ```
 
 The free model does not enforce JSON output at the API level. The AI Manager
-therefore requests one JSON object, parses it, and validates every structured
-field before the Logic Manager can use it. Do not upload confidential material
-or images containing personal data to the free endpoint.
+therefore requests JSON, parses it, and validates every structured field before
+the Logic Manager can use it. Do not upload confidential material or images
+containing personal data to the free endpoint.
+
+## Extract a complete module evidence pack
+
+The web flow is intentionally different from manual assessment entry. The user
+supplies only the module code, module credits, optional context, and one or more
+screenshots for that module. One multimodal request asks Nemotron to extract
+every distinct graded event it can find. A single upload can therefore create a
+quiz, assignment, project milestone, presentation, and final submission at the
+same time.
+
+```text
+module + credits + screenshots + optional context
+                         |
+                         v
+        validated list of assessment events
+                         |
+                         v
+       global credit-aware multi-module schedule
+```
+
+The assessment type, deadline, and weightage are AI-extracted fields. They do
+not appear in the primary upload form. The review area exposes them only after
+extraction so uncertain or missing values can be corrected. A correction is a
+deterministic appended revision and does not consume another AI request.
+
+Each event still uses the frozen assessment record contract. Module credits
+remain separate in `data/modules.json`, and the entire list from one evidence
+pack is appended atomically so a storage error cannot save only half an import.
 
 ## Process multiple deadlines
 
@@ -224,6 +252,11 @@ Build and show the current saved schedule:
 ```sh
 docker compose up --build
 ```
+
+The website runs in the `web` container at http://127.0.0.1:5050/. Its form
+extracts multiple assessments from one module evidence pack. Import additional
+modules through the same form; all ready assessments are combined in the
+horizontal weekly schedule.
 
 Process the multi-assessment example through the container:
 
