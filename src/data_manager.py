@@ -1,4 +1,4 @@
-"""JSON persistence functions for processed assessment records."""
+"""Persistence and record-history functions for JSON or PostgreSQL."""
 
 import json
 import logging
@@ -7,10 +7,67 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from . import contracts
+from . import io_manager
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def database_enabled() -> bool:
+    """Return whether Docker supplied a PostgreSQL connection."""
+    return bool(os.getenv("DATABASE_URL", "").strip())
+
+
+def initialize_storage() -> bool:
+    """Prepare PostgreSQL; JSON needs no startup work."""
+    if not database_enabled():
+        return True
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_records (
+                        storage_id BIGSERIAL PRIMARY KEY,
+                        record_id TEXT NOT NULL,
+                        module TEXT NOT NULL,
+                        assessment_type TEXT NOT NULL,
+                        deadline DATE,
+                        weightage DOUBLE PRECISION,
+                        priority TEXT,
+                        status TEXT NOT NULL,
+                        missing_fields JSONB NOT NULL,
+                        issues JSONB NOT NULL,
+                        revision INTEGER NOT NULL,
+                        UNIQUE (record_id, revision)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS module_profiles (
+                        module TEXT PRIMARY KEY,
+                        credits DOUBLE PRECISION NOT NULL
+                    )
+                    """
+                )
+    except Exception:
+        LOGGER.exception("Could not initialize PostgreSQL storage")
+        return False
+    return True
+
+
+def storage_is_ready() -> bool:
+    """Return whether the selected storage can be reached."""
+    if not database_enabled():
+        return True
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                return cursor.fetchone()[0] == 1
+    except Exception:
+        return False
 
 
 def generate_record_id() -> str:
@@ -19,116 +76,75 @@ def generate_record_id() -> str:
 
 
 def load_records(data_file: str) -> List[Dict[str, Any]]:
-    """Load records safely, returning an empty list for missing or corrupt data."""
-    path = Path(data_file)
-    if not path.exists():
-        LOGGER.info("Data file does not exist yet: %s", path)
-        return []
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        LOGGER.error("Could not load data file %s: %s", path, error)
-        return []
-
-    if not isinstance(payload, list):
-        LOGGER.error("Data file %s must contain a JSON list", path)
-        return []
-
-    records = [
-        record
-        for record in payload
-        if isinstance(record, dict)
-        and contracts.validate_record_contract(record) == []
-    ]
-    if len(records) != len(payload):
-        LOGGER.warning("Ignored invalid record entries in data file %s", path)
-    return records
+    """Load records from PostgreSQL in Docker or JSON for the CLI."""
+    if database_enabled():
+        return _load_database_records()
+    return _load_json_records(data_file)
 
 
 def save_records(records: List[Dict[str, Any]], data_file: str) -> bool:
-    """Save a complete record list to JSON and report success without crashing."""
-    path = Path(data_file)
-    if not isinstance(records, list) or any(
-        contracts.validate_record_contract(record) for record in records
-    ):
-        LOGGER.error("Refused to save records that violate the frozen contract")
+    """Replace the CLI JSON store with a complete validated record list."""
+    if database_enabled() or not isinstance(records, list):
         return False
-
-    return _write_json_atomic(records, path)
+    if any(io_manager.validate_record(record) for record in records):
+        return False
+    return _write_json(records, Path(data_file))
 
 
 def save_record_revision(record: Dict[str, Any], data_file: str) -> bool:
-    """Append one valid record revision to the JSON store."""
-    if contracts.validate_record_contract(record):
-        LOGGER.error("Refused to save a record that violates the frozen contract")
-        return False
+    """Append one validated revision to the selected store."""
+    return save_record_revisions([record], data_file)
 
-    records, load_error = _load_records_for_update(data_file)
-    if load_error:
-        LOGGER.error(
-            "Refused to overwrite unsafe data file %s: %s",
-            data_file,
-            load_error,
-        )
-        return False
-    if any(
-        existing["record_id"] == record["record_id"]
-        and existing["revision"] == record["revision"]
-        for existing in records
+
+def save_record_revisions(
+    records_to_add: List[Dict[str, Any]],
+    data_file: str,
+) -> bool:
+    """Append a complete extraction atomically or save none of it."""
+    if not records_to_add or any(
+        io_manager.validate_record(record) for record in records_to_add
     ):
-        LOGGER.error("Refused to save a duplicate record revision")
+        LOGGER.error("Refused records that violate the frozen contract")
         return False
-
-    expected_revision = next_revision(records, record["record_id"])
-    if record["revision"] != expected_revision:
-        LOGGER.error(
-            "Refused revision %s; expected revision %s",
-            record["revision"],
-            expected_revision,
-        )
-        return False
-    records.append(record)
-    return save_records(records, data_file)
+    if database_enabled():
+        return _save_database_records(records_to_add)
+    return _save_json_revisions(records_to_add, data_file)
 
 
-def save_record_revisions(records_to_add: List[Dict[str, Any]], data_file: str) -> bool:
-    """Atomically append multiple valid revisions or append none of them."""
-    if not isinstance(records_to_add, list) or not records_to_add:
-        LOGGER.error("Refused an empty bulk record save")
-        return False
-    if any(contracts.validate_record_contract(record) for record in records_to_add):
-        LOGGER.error("Refused bulk records that violate the frozen contract")
-        return False
+def load_module_profiles(module_file: str) -> Dict[str, Dict[str, float]]:
+    """Load module-credit context from the selected store."""
+    if database_enabled():
+        return _load_database_profiles()
+    profiles, error = _load_json_profiles(module_file)
+    if error:
+        LOGGER.error("Could not load module profiles %s: %s", module_file, error)
+        return {}
+    return {
+        module.strip().upper(): {"credits": float(profile["credits"])}
+        for module, profile in profiles.items()
+    }
 
-    existing_records, load_error = _load_records_for_update(data_file)
-    if load_error:
-        LOGGER.error(
-            "Refused to overwrite unsafe data file %s: %s",
-            data_file,
-            load_error,
-        )
-        return False
 
-    combined_records = list(existing_records)
-    for record in records_to_add:
-        if any(
-            existing["record_id"] == record["record_id"]
-            and existing["revision"] == record["revision"]
-            for existing in combined_records
-        ):
-            LOGGER.error("Refused a duplicate record revision in bulk save")
-            return False
-        expected_revision = next_revision(combined_records, record["record_id"])
-        if record["revision"] != expected_revision:
-            LOGGER.error(
-                "Refused bulk revision %s; expected revision %s",
-                record["revision"],
-                expected_revision,
-            )
-            return False
-        combined_records.append(record)
-    return save_records(combined_records, data_file)
+def save_module_profile(module: str, credits: float, module_file: str) -> bool:
+    """Create or update one module-credit profile."""
+    normalized_module = module.strip().upper()
+    if (
+        not normalized_module
+        or isinstance(credits, bool)
+        or not isinstance(credits, (int, float))
+        or not 0 < credits <= 60
+    ):
+        LOGGER.error("Refused invalid module credit metadata")
+        return False
+    if database_enabled():
+        return _save_database_profile(normalized_module, float(credits))
+
+    profiles, error = _load_json_profiles(module_file)
+    if error:
+        LOGGER.error("Refused unsafe module file %s: %s", module_file, error)
+        return False
+    profiles[normalized_module] = {"credits": float(credits)}
+    return _write_json(profiles, Path(module_file))
 
 
 def get_record_history(
@@ -167,44 +183,182 @@ def next_revision(records: List[Dict[str, Any]], record_id: str) -> int:
     return 1 if latest is None else latest["revision"] + 1
 
 
-def load_module_profiles(module_file: str) -> Dict[str, Dict[str, float]]:
-    """Load module-credit metadata safely from its separate JSON store."""
-    profiles, load_error = _load_module_profiles_for_update(module_file)
-    if load_error:
-        LOGGER.error("Could not load module profiles %s: %s", module_file, load_error)
-        return {}
+def filter_records(
+    records: List[Dict[str, Any]],
+    module: Optional[str] = None,
+    status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return records matching optional module and status filters."""
+    normalized_module = module.strip().upper() if module else None
+    return [
+        record
+        for record in records
+        if (
+            normalized_module is None
+            or record.get("module", "").strip().upper() == normalized_module
+        )
+        and (status is None or record.get("status") == status)
+    ]
+
+
+def _connect_database():
+    """Open one short-lived PostgreSQL connection."""
+    import psycopg
+
+    return psycopg.connect(os.environ["DATABASE_URL"])
+
+
+def _load_database_records() -> List[Dict[str, Any]]:
+    """Load frozen records from PostgreSQL in insertion order."""
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT record_id, module, assessment_type, deadline, weightage,
+                           priority, status, missing_fields, issues, revision
+                    FROM assessment_records
+                    ORDER BY storage_id
+                    """
+                )
+                rows = cursor.fetchall()
+    except Exception:
+        LOGGER.exception("Could not load assessment records from PostgreSQL")
+        return []
+    return [_database_row_to_record(row) for row in rows]
+
+
+def _database_row_to_record(row) -> Dict[str, Any]:
+    """Convert one database row back to the frozen record shape."""
     return {
-        module.strip().upper(): {"credits": float(profile["credits"])}
-        for module, profile in profiles.items()
+        "record_id": row[0],
+        "module": row[1],
+        "assessment_type": row[2],
+        "deadline": row[3].isoformat() if row[3] is not None else None,
+        "weightage": row[4],
+        "priority": row[5],
+        "status": row[6],
+        "missing_fields": row[7],
+        "issues": row[8],
+        "revision": row[9],
     }
 
 
-def save_module_profile(module: str, credits: float, module_file: str) -> bool:
-    """Create or update one module-credit profile without changing records."""
-    normalized_module = module.strip().upper()
-    if (
-        not normalized_module
-        or isinstance(credits, bool)
-        or not isinstance(credits, (int, float))
-        or not 0 < credits <= 60
-    ):
-        LOGGER.error("Refused invalid module credit metadata")
+def _save_database_records(records: List[Dict[str, Any]]) -> bool:
+    """Append validated records in one PostgreSQL transaction."""
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                for record in records:
+                    cursor.execute(
+                        """
+                        SELECT COALESCE(MAX(revision), 0)
+                        FROM assessment_records
+                        WHERE record_id = %s
+                        """,
+                        (record["record_id"],),
+                    )
+                    if record["revision"] != cursor.fetchone()[0] + 1:
+                        raise ValueError("Assessment revision is out of sequence.")
+                    cursor.execute(
+                        """
+                        INSERT INTO assessment_records (
+                            record_id, module, assessment_type, deadline, weightage,
+                            priority, status, missing_fields, issues, revision
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s
+                        )
+                        """,
+                        (
+                            record["record_id"],
+                            record["module"],
+                            record["assessment_type"],
+                            record["deadline"],
+                            record["weightage"],
+                            record["priority"],
+                            record["status"],
+                            json.dumps(record["missing_fields"]),
+                            json.dumps(record["issues"]),
+                            record["revision"],
+                        ),
+                    )
+    except Exception:
+        LOGGER.exception("Could not append assessment records to PostgreSQL")
+        return False
+    return True
+
+
+def _load_database_profiles() -> Dict[str, Dict[str, float]]:
+    """Load module-credit context from PostgreSQL."""
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT module, credits FROM module_profiles ORDER BY module")
+                rows = cursor.fetchall()
+    except Exception:
+        LOGGER.exception("Could not load module profiles from PostgreSQL")
+        return {}
+    return {row[0]: {"credits": float(row[1])} for row in rows}
+
+
+def _save_database_profile(module: str, credits: float) -> bool:
+    """Upsert one module-credit profile in PostgreSQL."""
+    try:
+        with _connect_database() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO module_profiles (module, credits)
+                    VALUES (%s, %s)
+                    ON CONFLICT (module)
+                    DO UPDATE SET credits = EXCLUDED.credits
+                    """,
+                    (module, credits),
+                )
+    except Exception:
+        LOGGER.exception("Could not save a module profile to PostgreSQL")
+        return False
+    return True
+
+
+def _load_json_records(data_file: str) -> List[Dict[str, Any]]:
+    """Load valid records safely from the CLI JSON store."""
+    records, error = _load_json_records_strict(data_file)
+    if error:
+        LOGGER.error("Could not load data file %s: %s", data_file, error)
+        return []
+    return records
+
+
+def _save_json_revisions(
+    records_to_add: List[Dict[str, Any]],
+    data_file: str,
+) -> bool:
+    """Append validated records atomically to the CLI JSON store."""
+    existing_records, error = _load_json_records_strict(data_file)
+    if error:
+        LOGGER.error("Refused unsafe data file %s: %s", data_file, error)
         return False
 
-    profiles, load_error = _load_module_profiles_for_update(module_file)
-    if load_error:
-        LOGGER.error(
-            "Refused to overwrite unsafe module file %s: %s",
-            module_file,
-            load_error,
+    combined_records = list(existing_records)
+    for record in records_to_add:
+        duplicate = any(
+            saved["record_id"] == record["record_id"]
+            and saved["revision"] == record["revision"]
+            for saved in combined_records
         )
-        return False
-    profiles[normalized_module] = {"credits": float(credits)}
-    return _write_json_atomic(profiles, Path(module_file))
+        if duplicate or record["revision"] != next_revision(
+            combined_records,
+            record["record_id"],
+        ):
+            LOGGER.error("Refused duplicate or out-of-sequence record revision")
+            return False
+        combined_records.append(record)
+    return _write_json(combined_records, Path(data_file))
 
 
-def _load_records_for_update(data_file: str):
-    """Load an existing store strictly so corrupt data is never overwritten."""
+def _load_json_records_strict(data_file: str):
+    """Load JSON records without ever overwriting corrupt content."""
     path = Path(data_file)
     if not path.exists():
         return [], None
@@ -215,16 +369,15 @@ def _load_records_for_update(data_file: str):
     if not isinstance(payload, list):
         return [], "existing data is not a JSON list"
     if any(
-        not isinstance(record, dict)
-        or contracts.validate_record_contract(record)
+        not isinstance(record, dict) or io_manager.validate_record(record)
         for record in payload
     ):
         return [], "existing data contains an invalid record"
     return payload, None
 
 
-def _load_module_profiles_for_update(module_file: str):
-    """Load module metadata strictly so corrupt profiles are not overwritten."""
+def _load_json_profiles(module_file: str):
+    """Load module profiles strictly so corrupt data is never overwritten."""
     path = Path(module_file)
     if not path.exists():
         return {}, None
@@ -248,21 +401,20 @@ def _load_module_profiles_for_update(module_file: str):
     return payload, None
 
 
-def _write_json_atomic(payload: Any, path: Path) -> bool:
-    """Write one JSON payload privately and replace the destination atomically."""
+def _write_json(payload: Any, path: Path) -> bool:
+    """Write JSON privately and replace the destination atomically."""
     temporary_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
         descriptor = os.open(
             temporary_path,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             0o600,
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as data_stream:
-            data_stream.write(serialized)
-            data_stream.flush()
-            os.fsync(data_stream.fileno())
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary_path, path)
         os.chmod(path, 0o600)
     except (OSError, TypeError, ValueError) as error:
@@ -273,17 +425,3 @@ def _write_json_atomic(payload: Any, path: Path) -> bool:
             pass
         return False
     return True
-
-
-def filter_records(
-    records: List[Dict[str, Any]],
-    module: Optional[str] = None,
-    status: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Return records matching the optional module and status filters."""
-    return [
-        record
-        for record in records
-        if (module is None or record.get("module") == module)
-        and (status is None or record.get("status") == status)
-    ]

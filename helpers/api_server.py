@@ -1,5 +1,6 @@
-"""Readable local HTTP API for the Dockerised procedural core."""
+"""Thin local HTTP adapter for the procedural core."""
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -7,6 +8,8 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
+from uuid import UUID, uuid4
 
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -17,19 +20,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from helpers import progress_tracker  # noqa: E402
+from src import data_manager  # noqa: E402
 from src import main as core_main  # noqa: E402
-from src import storage_manager  # noqa: E402
 
 
 LOGGER = logging.getLogger(__name__)
 MAX_ACTIVE_JOBS = 4
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 35 * 1024 * 1024
+JOB_TTL_SECONDS = 15 * 60
 
 
 def parse_optional_number(raw_value, field_label, errors):
-    """Convert one optional form number without applying domain rules."""
+    """Convert one optional request number without applying domain rules."""
     if raw_value is None:
         return None
     if isinstance(raw_value, bool):
@@ -46,7 +47,7 @@ def parse_optional_number(raw_value, field_label, errors):
 
 
 def save_uploaded_images(uploaded_files, target_directory):
-    """Save uploads only for the lifetime of one background extraction."""
+    """Save uploads only for the lifetime of one extraction."""
     image_paths = []
     for index, uploaded_file in enumerate(uploaded_files):
         if not uploaded_file or not uploaded_file.filename:
@@ -58,27 +59,160 @@ def save_uploaded_images(uploaded_files, target_directory):
     return image_paths
 
 
-def dashboard_payload():
-    """Return the core state required by the separate host frontend."""
-    summary = core_main.start_application()
+def job_directory():
+    """Return the disposable progress directory inside the API container."""
+    path = Path(tempfile.gettempdir()) / "stackplan-jobs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def job_path(job_id):
+    """Resolve only valid opaque job identifiers."""
+    try:
+        normalized_id = str(UUID(str(job_id)))
+    except ValueError:
+        return None
+    return job_directory() / f"{normalized_id}.json"
+
+
+def write_job(job):
+    """Replace one progress file atomically."""
+    path = job_path(job["id"])
+    temporary_path = path.with_suffix(f".{uuid4().hex}.tmp")
+    temporary_path.write_text(json.dumps(job), encoding="utf-8")
+    temporary_path.replace(path)
+
+
+def read_job(job_id):
+    """Read one progress file without keeping process-global state."""
+    path = job_path(job_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def create_job():
+    """Create one disposable progress record."""
+    job_id = str(uuid4())
+    now = time.time()
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "Evidence pack queued for processing.",
+        "attempt": 0,
+        "max_attempts": None,
+        "event_count": None,
+        "created_at": now,
+        "updated_at": now,
+        "events": [
+            {
+                "stage": "queued",
+                "message": "Evidence pack queued for processing.",
+                "elapsed_seconds": 0.0,
+            }
+        ],
+        "result": None,
+    }
+    write_job(job)
+    return job_id
+
+
+def update_job(job_id, progress_event=None, **changes):
+    """Update one file-backed progress record."""
+    job = read_job(job_id)
+    if job is None:
+        return
+    now = time.time()
+    if progress_event:
+        job["stage"] = progress_event.get("stage", job["stage"])
+        job["message"] = progress_event.get("message", job["message"])
+        for key in ("attempt", "max_attempts", "event_count"):
+            if progress_event.get(key) is not None:
+                job[key] = progress_event[key]
+        event = {
+            "stage": job["stage"],
+            "message": job["message"],
+            "elapsed_seconds": round(now - job["created_at"], 1),
+        }
+        if progress_event.get("attempt") is not None:
+            event["attempt"] = progress_event["attempt"]
+        previous = job["events"][-1] if job["events"] else None
+        if previous is None or any(
+            previous.get(key) != event.get(key)
+            for key in ("stage", "message", "attempt")
+        ):
+            job["events"].append(event)
+    job.update(changes)
+    job["updated_at"] = now
+    write_job(job)
+
+
+def public_job(job_id):
+    """Return safe progress data without submitted content or local paths."""
+    job = read_job(job_id)
+    if job is None:
+        return None
+    return {
+        key: job[key]
+        for key in (
+            "id",
+            "status",
+            "stage",
+            "message",
+            "attempt",
+            "max_attempts",
+            "event_count",
+            "events",
+            "result",
+        )
+    } | {"elapsed_seconds": round(time.time() - job["created_at"], 1)}
+
+
+def cleanup_jobs():
+    """Delete finished progress files after the short debugging window."""
+    cutoff = time.time() - JOB_TTL_SECONDS
+    for path in job_directory().glob("*.json"):
+        job = read_job(path.stem)
+        if job and job["status"] in ("complete", "failed"):
+            if job["updated_at"] < cutoff:
+                path.unlink(missing_ok=True)
+
+
+def active_job_count():
+    """Count queued and running jobs from their disposable files."""
+    jobs = (read_job(path.stem) for path in job_directory().glob("*.json"))
+    return sum(
+        job is not None and job["status"] in ("queued", "running")
+        for job in jobs
+    )
+
+
+def dashboard_payload(focus_module=None):
+    """Return one module view required by the host frontend."""
+    summary = core_main.start_application(focus_module=focus_module)
     return {
         "schedule": summary["schedule"],
         "module_profiles": summary["module_profiles"],
         "latest_records": summary["latest_records"],
         "records_loaded": summary["records_loaded"],
+        "focus_module": summary["focus_module"],
     }
 
 
 def run_extraction_job(job_id, input_source, upload_directory):
-    """Run the synchronous core while the frontend polls safe progress."""
-    progress_tracker.update_job(
+    """Pass source through the core and persist visible progress."""
+    update_job(
         job_id,
         {"stage": "starting", "message": "Starting procedural extraction."},
         status="running",
     )
 
     def report_progress(event):
-        progress_tracker.update_job(job_id, event)
+        update_job(job_id, event)
 
     try:
         result = core_main.process_assessment_source(
@@ -103,23 +237,19 @@ def run_extraction_job(job_id, input_source, upload_directory):
         "errors": list(result.get("errors", [])),
     }
     if summary["ok"]:
-        progress_tracker.update_job(
+        update_job(
             job_id,
             {
                 "stage": "complete",
-                "message": (
-                    f"Extracted and scheduled {summary['extracted_count']} "
-                    "assessment event(s)."
-                ),
+                "message": f"Built {summary['extracted_count']} timetable block(s).",
                 "event_count": summary["extracted_count"],
             },
             status="complete",
             result=summary,
         )
         return
-
     message = summary["errors"][0] if summary["errors"] else "Extraction failed."
-    progress_tracker.update_job(
+    update_job(
         job_id,
         {"stage": "failed", "message": message},
         status="failed",
@@ -128,136 +258,127 @@ def run_extraction_job(job_id, input_source, upload_directory):
 
 
 def start_extraction_worker(job_id, input_source, upload_directory):
-    """Start one daemon worker for the local MVP API."""
-    worker = threading.Thread(
+    """Start the bounded local worker without retaining the thread globally."""
+    threading.Thread(
         target=run_extraction_job,
         args=(job_id, input_source, upload_directory),
         daemon=True,
-    )
-    worker.start()
+    ).start()
 
 
-@app.after_request
-def add_local_cors_headers(response):
-    """Allow the host-run frontend to call this local development API."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
+def create_app():
+    """Create the thin API without module-level application state."""
+    app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 35 * 1024 * 1024
+
+    @app.after_request
+    def add_local_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+
+    @app.get("/")
+    def api_index():
+        return jsonify(
+            {
+                "name": "Stackplan development API",
+                "health": "/health",
+                "dashboard": "/api/dashboard",
+                "frontend": "Run python frontend-demo/app.py on the host.",
+            }
+        )
+
+    @app.get("/health")
+    def health():
+        database_ready = data_manager.storage_is_ready()
+        return jsonify({"ok": database_ready, "database": database_ready}), (
+            200 if database_ready else 503
+        )
+
+    @app.get("/api/dashboard")
+    def dashboard_api():
+        return jsonify(dashboard_payload(request.args.get("module")))
+
+    @app.post("/api/extractions")
+    def start_extraction_api():
+        cleanup_jobs()
+        if active_job_count() >= MAX_ACTIVE_JOBS:
+            return jsonify({"errors": ["Too many extractions are running."]}), 429
+
+        errors = []
+        module_credits = parse_optional_number(
+            request.form.get("module_credits"),
+            "Module credits",
+            errors,
+        )
+        if errors:
+            return jsonify({"errors": errors}), 400
+
+        upload_directory = tempfile.mkdtemp(prefix="assessment-upload-")
+        try:
+            input_source = {
+                "module": request.form.get("module", ""),
+                "module_credits": module_credits,
+                "prompt": request.form.get("prompt", ""),
+                "image_paths": save_uploaded_images(
+                    request.files.getlist("source_files"),
+                    upload_directory,
+                ),
+            }
+            job_id = create_job()
+            start_extraction_worker(job_id, input_source, upload_directory)
+        except Exception:
+            shutil.rmtree(upload_directory, ignore_errors=True)
+            LOGGER.exception("Could not queue assessment extraction")
+            return jsonify({"errors": ["Extraction could not be started."]}), 500
+        return jsonify(
+            {"job_id": job_id, "status_url": f"/api/extractions/{job_id}"}
+        ), 202
+
+    @app.get("/api/extractions/<job_id>")
+    def extraction_status_api(job_id):
+        job = public_job(job_id)
+        if job is None:
+            return jsonify({"errors": ["Extraction job was not found."]}), 404
+        return jsonify(job)
+
+    @app.post("/api/assessments/<record_id>/review")
+    def review_assessment_api(record_id):
+        payload = request.get_json(silent=True) or request.form.to_dict()
+        errors = []
+        raw_weightage = payload.get("weightage")
+        weightage = parse_optional_number(raw_weightage, "Weightage", errors)
+        if errors:
+            return jsonify({"errors": errors}), 400
+        updates = {"assessment_type": str(payload.get("assessment_type") or "").strip()}
+        deadline = str(payload.get("deadline") or "").strip()
+        if deadline:
+            updates["deadline"] = deadline
+        if raw_weightage is not None and str(raw_weightage).strip():
+            updates["weightage"] = weightage
+        result = core_main.correct_assessment(record_id, updates)
+        return jsonify(result), (200 if result.get("ok") else 400)
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def upload_too_large(_error):
+        return jsonify({"errors": ["Combined upload size must not exceed 35 MB."]}), 413
+
+    return app
 
 
-@app.get("/")
-def api_index():
-    """Show readable local endpoints at the published Docker address."""
-    return jsonify(
-        {
-            "name": "Stackplan development API",
-            "health": "/health",
-            "dashboard": "/api/dashboard",
-            "frontend": "Run python frontend-demo/app.py on the host.",
-        }
-    )
-
-
-@app.get("/health")
-def health():
-    """Report both API and PostgreSQL readiness."""
-    database_ready = storage_manager.storage_is_ready()
-    return jsonify({"ok": database_ready, "database": database_ready}), (
-        200 if database_ready else 503
-    )
-
-
-@app.get("/api/dashboard")
-def dashboard_api():
-    """Return current assessments, modules, and derived schedule."""
-    return jsonify(dashboard_payload())
-
-
-@app.post("/api/extractions")
-def start_extraction_api():
-    """Queue one module evidence pack and return its progress address."""
-    progress_tracker.cleanup_finished_jobs()
-    if progress_tracker.active_job_count() >= MAX_ACTIVE_JOBS:
-        return jsonify({"errors": ["Too many extractions are already running."]}), 429
-
-    conversion_errors = []
-    module_credits = parse_optional_number(
-        request.form.get("module_credits"),
-        "Module credits",
-        conversion_errors,
-    )
-    if conversion_errors:
-        return jsonify({"errors": conversion_errors}), 400
-
-    upload_directory = tempfile.mkdtemp(prefix="assessment-upload-")
-    try:
-        input_source = {
-            "module": request.form.get("module", ""),
-            "module_credits": module_credits,
-            "prompt": request.form.get("prompt", ""),
-            "image_paths": save_uploaded_images(
-                request.files.getlist("source_files"),
-                upload_directory,
-            ),
-        }
-        job_id = progress_tracker.create_job()
-        start_extraction_worker(job_id, input_source, upload_directory)
-    except Exception:
-        shutil.rmtree(upload_directory, ignore_errors=True)
-        LOGGER.exception("Could not queue assessment extraction")
-        return jsonify({"errors": ["Extraction could not be started."]}), 500
-
-    return jsonify(
-        {
-            "job_id": job_id,
-            "status_url": f"/api/extractions/{job_id}",
-        }
-    ), 202
-
-
-@app.get("/api/extractions/<job_id>")
-def extraction_status_api(job_id):
-    """Return stage, elapsed time, attempts, and safe diagnostics."""
-    job = progress_tracker.public_job(job_id)
-    if job is None:
-        return jsonify({"errors": ["Extraction job was not found."]}), 404
-    return jsonify(job)
-
-
-@app.post("/api/assessments/<record_id>/review")
-def review_assessment_api(record_id):
-    """Append reviewed fields without another AI request."""
-    payload = request.get_json(silent=True) or request.form.to_dict()
-    errors = []
-    assessment_type = str(payload.get("assessment_type") or "").strip()
-    deadline = str(payload.get("deadline") or "").strip()
-    raw_weightage = payload.get("weightage")
-    weightage = parse_optional_number(raw_weightage, "Weightage", errors)
-    if errors:
-        return jsonify({"errors": errors}), 400
-    updates = {"assessment_type": assessment_type}
-    if deadline:
-        updates["deadline"] = deadline
-    if raw_weightage is not None and str(raw_weightage).strip():
-        updates["weightage"] = weightage
-    result = core_main.correct_assessment(record_id, updates)
-    return jsonify(result), (200 if result.get("ok") else 400)
-
-
-@app.errorhandler(RequestEntityTooLarge)
-def upload_too_large(_error):
-    """Return a small JSON error for oversized local uploads."""
-    return jsonify({"errors": ["Combined upload size must not exceed 35 MB."]}), 413
-
-
-if __name__ == "__main__":
+def run_api():
+    """Initialize storage, then expose the local API."""
     logging.basicConfig(level=logging.INFO)
-    if not storage_manager.initialize_storage():
+    if not data_manager.initialize_storage():
         raise RuntimeError("PostgreSQL storage could not be initialized.")
-    app.run(
+    create_app().run(
         host="0.0.0.0",
         port=int(os.getenv("API_PORT", "8000")),
         debug=False,
         threaded=True,
     )
+
+
+if __name__ == "__main__":
+    run_api()

@@ -52,7 +52,6 @@ def apply_business_rules(
     ai_record: Dict[str, Any],
     record_id: str,
     revision: int,
-    scheduling_context: Optional[Dict[str, Any]] = None,
     today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Construct an exact contract record with authoritative business fields."""
@@ -104,42 +103,6 @@ def apply_business_rules(
         "issues": list(ai_record.get("issues", [])),
         "revision": revision,
     }
-
-
-def build_recoverable_record(
-    input_record: Dict[str, Any],
-    processing_errors: List[str],
-    record_id: str,
-    revision: int,
-    today: Optional[date] = None,
-) -> Dict[str, Any]:
-    """Preserve trusted input after the AI exhausts its bounded attempts."""
-    feedback = " ".join(processing_errors) or "AI processing failed."
-    extraction = {
-        "module": input_record["module"],
-        "assessment_type": input_record["assessment_type"],
-        "deadline": input_record.get("deadline"),
-        "weightage": input_record.get("weightage"),
-        "missing_fields": [
-            field
-            for field in ("deadline", "weightage")
-            if input_record.get(field) is None
-        ],
-        "issues": [
-            {
-                "type": "AI_PROCESSING_FAILURE",
-                "field": None,
-                "severity": "error",
-                "feedback": feedback,
-            }
-        ],
-    }
-    return apply_business_rules(
-        extraction,
-        record_id=record_id,
-        revision=revision,
-        today=today,
-    )
 
 
 def build_schedule(

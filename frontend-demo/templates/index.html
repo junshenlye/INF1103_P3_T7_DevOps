@@ -17,7 +17,7 @@
       </a>
       <div class="header-status">
         <span class="status-dot" aria-hidden="true"></span>
-        {{ records_loaded }} saved revision{% if records_loaded != 1 %}s{% endif %}
+        {{ records_loaded }} assessment{% if records_loaded != 1 %}s{% endif %}
       </div>
     </header>
 
@@ -138,12 +138,12 @@
           <div class="section-heading">
             <div>
               <p class="eyebrow">Credit context</p>
-              <h2>Tracked modules</h2>
+              <h2>Current module</h2>
             </div>
           </div>
           <p class="panel-copy">
-            Add each module once. Every extracted event joins the same workload,
-            where urgency, assessment weight, and module credits compete globally.
+            This MVP validates one module at a time. Its credits adjust how much
+            each assessment contributes to the timetable.
           </p>
           <div class="module-list">
             {% if module_profiles %}
@@ -169,7 +169,7 @@
         <div class="schedule-heading">
           <div>
             <p class="eyebrow">Extraction review</p>
-            <h2>Assessments found across modules</h2>
+            <h2>{{ focus_module or 'Module' }} assessments</h2>
             <p>The AI fills these fields. Open a card only when an extracted value needs human correction.</p>
           </div>
           <span class="review-count">{{ latest_records|length }} current event{% if latest_records|length != 1 %}s{% endif %}</span>
@@ -234,9 +234,9 @@
       <section class="schedule-section">
         <div class="schedule-heading">
           <div>
-            <p class="eyebrow">Rolling schedule</p>
-            <h2>Weekly preparation blocks</h2>
-            <p>Weeks run horizontally. Blocks in the same week stack vertically, with the highest priority anchored at the bottom.</p>
+            <p class="eyebrow">Single-module timetable</p>
+            <h2>{{ focus_module or 'Weekly' }} preparation plan</h2>
+            <p>A compact week strip. Each coloured row is one assessment block; higher priority sits lower in its week.</p>
           </div>
           <div class="legend" aria-label="Priority colour legend">
             <span><i class="legend-dot low"></i>Low</span>
@@ -251,28 +251,24 @@
               {% for week in schedule.weeks %}
                 <article class="week-column">
                   <header>
-                    <span>{{ week.label }}</span>
-                    <small>{{ week.week_start[5:] }} — {{ week.week_end[5:] }}</small>
+                    <span>{{ week.week_start[5:] }}</span>
+                    <small>{{ week.week_end[5:] }}</small>
                   </header>
                   <div class="week-stack">
                     {% if not week.blocks %}
                       <div class="empty-week">Open capacity</div>
                     {% endif %}
                     {% for block in week.blocks %}
-                      <article class="schedule-block priority-{{ block.priority|lower }}" data-priority="{{ block.priority }}">
-                        <div class="block-topline">
-                          <span class="priority-label">{{ block.priority }}</span>
-                          <span>Rev {{ block.revision }}</span>
+                      <article class="schedule-block priority-{{ block.priority|lower }}" title="Prepare {{ block.start_date }} to {{ block.end_date }}; due {{ block.deadline }}">
+                        <div class="block-line">
+                          <strong>{{ block.assessment_type }}</strong>
+                          <span>{{ block.deadline[5:] }}</span>
                         </div>
-                        <strong>{{ block.module }}</strong>
-                        <span class="assessment-name">{{ block.assessment_type }}</span>
-                        <dl>
-                          <div><dt>Due</dt><dd>{{ block.deadline }}</dd></div>
-                          <div><dt>Prep</dt><dd>{{ block.start_date[5:] }} → {{ block.end_date[5:] }}</dd></div>
-                          {% if block.module_credits is not none %}
-                            <div><dt>Credit load</dt><dd>{{ block.credit_weighted_load|round(2) }}</dd></div>
-                          {% endif %}
-                        </dl>
+                        <div class="block-meta">
+                          <span>{{ block.priority }}</span>
+                          <span>{{ block.start_date[5:] }} → {{ block.end_date[5:] }}</span>
+                          <span>{{ block.assessment_weightage|round(1) }}%</span>
+                        </div>
                       </article>
                     {% endfor %}
                   </div>
@@ -297,7 +293,7 @@
     </main>
 
     <footer>
-      <span>Procedural core · AI-validated JSON · Local revision history</span>
+      <span>Input → AI → Logic → Data</span>
       <a href="{{ url_for('schedule_api') }}">Schedule JSON</a>
     </footer>
   </body>

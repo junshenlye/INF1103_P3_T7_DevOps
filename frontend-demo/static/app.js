@@ -151,7 +151,9 @@ async function pollExtraction(statusUrl) {
     }
     renderProgress(job);
     if (job.status === "complete") {
-      window.setTimeout(() => window.location.reload(), 1400);
+      const module = job.result?.source_module;
+      const nextPage = module ? `/?module=${encodeURIComponent(module)}` : "/";
+      window.setTimeout(() => window.location.assign(nextPage), 900);
       return;
     }
     if (job.status === "failed") {

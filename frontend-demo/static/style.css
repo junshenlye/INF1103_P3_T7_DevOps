@@ -806,68 +806,71 @@ textarea:focus {
 
 .timeline-scroll {
   overflow-x: auto;
-  padding: 4px 2px 18px;
+  padding: 2px 1px 10px;
   scrollbar-color: #aeb6ae transparent;
 }
 
 .weekly-grid {
-  min-width: max(100%, calc(var(--week-count) * 270px));
+  min-width: max(100%, calc(var(--week-count) * 190px));
   display: grid;
-  grid-template-columns: repeat(var(--week-count), minmax(250px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(var(--week-count), minmax(180px, 1fr));
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 254, 249, 0.65);
 }
 
 .week-column {
-  min-height: 440px;
+  min-height: 126px;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(255, 254, 249, 0.72);
-  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+
+.week-column:last-child {
+  border-right: 0;
 }
 
 .week-column > header {
-  padding: 14px 15px;
+  padding: 5px 8px 8px;
   display: flex;
-  align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
   border-bottom: 1px solid var(--line);
-  background: rgba(238, 239, 232, 0.72);
 }
 
 .week-column > header span {
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   font-weight: 850;
 }
 
 .week-column > header small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
 }
 
 .week-stack {
   flex: 1;
-  min-height: 380px;
-  padding: 10px;
+  min-height: 92px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 4px;
 }
 
 .empty-week {
   margin: auto;
   color: #a1aaa3;
-  font-size: 0.76rem;
+  font-size: 0.68rem;
 }
 
 .schedule-block {
   position: relative;
-  padding: 13px 14px 14px 17px;
+  padding: 7px 8px 7px 11px;
   border: 1px solid transparent;
-  border-radius: 11px;
+  border-radius: 7px;
   overflow: hidden;
 }
 
@@ -875,7 +878,7 @@ textarea:focus {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
-  width: 5px;
+  width: 3px;
   background: currentColor;
 }
 
@@ -897,60 +900,33 @@ textarea:focus {
   color: #923c31;
 }
 
-.block-topline {
-  margin-bottom: 8px;
+.block-line,
+.block-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 0.62rem;
-  font-weight: 750;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  gap: 6px;
 }
 
-.priority-label {
-  padding: 3px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.schedule-block > strong,
-.assessment-name {
-  display: block;
+.block-line strong {
+  overflow: hidden;
   color: var(--ink);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.schedule-block > strong {
-  font-size: 0.95rem;
-  letter-spacing: 0.02em;
-}
-
-.assessment-name {
-  margin: 1px 0 10px;
-  font-size: 0.79rem;
-}
-
-.schedule-block dl {
-  margin: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.schedule-block dl div {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 0.67rem;
-}
-
-.schedule-block dt {
-  opacity: 0.7;
-}
-
-.schedule-block dd {
-  margin: 0;
+.block-line > span {
   color: var(--ink);
+  font-size: 0.65rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.block-meta {
+  margin-top: 3px;
+  color: currentColor;
+  font-size: 0.57rem;
   font-weight: 750;
 }
 

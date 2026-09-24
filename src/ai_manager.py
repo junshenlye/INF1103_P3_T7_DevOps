@@ -10,7 +10,7 @@ import re
 import ssl
 from typing import Any, Callable, Dict, List, Optional
 
-from . import contracts
+from . import io_manager
 
 
 LOGGER = logging.getLogger(__name__)
@@ -27,41 +27,6 @@ EXTRACTION_FIELDS = (
     "missing_fields",
     "issues",
 )
-
-
-def build_prompt(input_record: Dict[str, Any]) -> str:
-    """Build a strict extraction prompt without adding business rules."""
-    prompt_input = {
-        key: value
-        for key, value in input_record.items()
-        if key not in ("image_paths", "record_id", "module_credits")
-    }
-    schema_example = {
-        "module": "INF1103",
-        "assessment_type": "Project",
-        "deadline": "2026-10-15",
-        "weightage": 30,
-        "missing_fields": [],
-        "issues": [],
-    }
-    return (
-        "Extract assessment information from the supplied input record.\n"
-        "Return exactly one JSON object with no markdown or commentary.\n"
-        f"Use exactly these keys: {', '.join(EXTRACTION_FIELDS)}.\n"
-        "Do not calculate status or priority.\n"
-        "Treat each non-null structured input field as a user-supplied fact. "
-        "Preserve it unless an attached source explicitly gives a different "
-        "value. A teaching-week label alone does not contradict an exact date "
-        "when no academic calendar is supplied.\n"
-        "Do not invent missing information. Use null for a missing deadline or "
-        "weightage and list its field name in missing_fields.\n"
-        "Dates must use YYYY-MM-DD when an exact date is supplied. A teaching "
-        "week such as 'Week 6' is not an exact date and must become null.\n"
-        "Each issue must contain type, field, severity, and feedback. Severity "
-        "must be info, warning, or error.\n"
-        f"Example shape: {json.dumps(schema_example, separators=(',', ':'))}\n"
-        f"Input record: {json.dumps(prompt_input, ensure_ascii=False)}"
-    )
 
 
 def build_source_prompt(input_source: Dict[str, Any]) -> str:
@@ -284,7 +249,7 @@ def validate_extraction(extraction: Dict[str, Any]) -> List[str]:
         errors.append("issues must be a list.")
     else:
         for index, issue in enumerate(issues):
-            errors.extend(contracts.validate_issue_contract(issue, index))
+            errors.extend(io_manager.validate_issue(issue, index))
         if isinstance(extracted_missing_fields, list):
             for field in ("deadline", "weightage"):
                 if field in extracted_missing_fields and not any(
@@ -543,90 +508,6 @@ def process_source(
     return {
         "ok": False,
         "extractions": [],
-        "errors": last_errors,
-        "attempts": max_attempts,
-    }
-
-
-def process_record(
-    input_record: Dict[str, Any],
-    api_caller: Optional[Callable[..., str]] = None,
-) -> Dict[str, Any]:
-    """Send one record through the AI and return validated extraction data."""
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    base_url = (
-        os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip()
-        or DEFAULT_BASE_URL
-    )
-
-    if api_caller is None and not api_key:
-        return {
-            "ok": False,
-            "extraction": None,
-            "errors": ["OPENROUTER_API_KEY is not configured."],
-            "attempts": 0,
-        }
-    if api_caller is None and base_url.rstrip("/") != DEFAULT_BASE_URL:
-        return {
-            "ok": False,
-            "extraction": None,
-            "errors": ["OPENROUTER_BASE_URL must use the official HTTPS endpoint."],
-            "attempts": 0,
-        }
-
-    caller = api_caller or call_openrouter
-    caller_api_key = api_key if api_caller is None else ""
-    max_attempts = _read_max_attempts()
-    last_errors = ["AI response could not be processed."]
-
-    for attempt in range(1, max_attempts + 1):
-        LOGGER.info("AI request attempt %s using model %s", attempt, model)
-        try:
-            response_text = caller(
-                prompt=build_prompt(input_record),
-                image_paths=list(input_record.get("image_paths", [])),
-                api_key=caller_api_key,
-                model=model,
-                base_url=base_url,
-            )
-            extraction = parse_model_response(response_text)
-            schema_errors = validate_extraction(extraction)
-        except (
-            OSError,
-            http.client.HTTPException,
-            IndexError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ) as error:
-            last_errors = [_safe_processing_error(error)]
-            LOGGER.error(
-                "AI request or parsing failed on attempt %s: %s",
-                attempt,
-                last_errors[0],
-            )
-            continue
-
-        if schema_errors:
-            last_errors = schema_errors
-            LOGGER.error(
-                "AI response failed schema validation on attempt %s: %s",
-                attempt,
-                schema_errors,
-            )
-            continue
-
-        return {
-            "ok": True,
-            "extraction": extraction,
-            "errors": [],
-            "attempts": attempt,
-        }
-
-    return {
-        "ok": False,
-        "extraction": None,
         "errors": last_errors,
         "attempts": max_attempts,
     }

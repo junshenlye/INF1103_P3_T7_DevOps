@@ -1,113 +1,82 @@
 # Stackplan MVP
 
-Stackplan turns module assessment screenshots into one credit-aware student
-schedule. The user supplies the module code and credits because those details
-are commonly missing from assessment snapshots. Nemotron extracts the events;
-the procedural core validates, prioritises, stores, and schedules them.
+Stackplan reads one module's assessment screenshots, extracts every visible
+assessment, and turns valid events into a compact weekly preparation timetable.
 
-## Development layout
+The current milestone deliberately handles one module at a time. Multi-module
+competition is the next iteration.
+
+## Procedural flow
 
 ```text
-Host browser
-    |
-    v
-Frontend on 127.0.0.1:5050          (outside Docker)
-    |
-    v
-HTTP API on 127.0.0.1:8000          (Docker: app)
-    |
-    v
-Procedural core in src/             (input -> process -> output)
-    |
-    v
-PostgreSQL on 127.0.0.1:5433        (Docker: db, temporary data)
+Input
+  -> I/O Manager validates user data
+  -> AI Manager extracts structured events
+  -> Logic Manager assigns status, priority, and preparation dates
+  -> Data Manager validates and saves the finished records
+Output
 ```
 
-Docker contains only the main API and PostgreSQL. The frontend runs directly
-on the host so teammates can edit and refresh it without rebuilding an image.
+Each stage receives ordinary dictionaries as arguments and returns a result to
+the next stage. Project-owned Python defines no classes and keeps no mutable
+application state at module level.
 
-The current PostgreSQL data directory is a Docker `tmpfs`. Running
-`docker compose down` removes the database state. This is intentional while the
-schema and product behaviour are still changing.
+## Small file map
 
-## Start the MVP
+```text
+src/
+  io_manager.py       input/output and record validation
+  ai_manager.py       Nemotron/OpenRouter extraction
+  logic_manager.py    deterministic status and timetable rules
+  data_manager.py     JSON/PostgreSQL persistence and history
+  main.py             passes results between managers; CLI entry point
 
-Create `.env` from `.env.example` and add the OpenRouter API key. Never commit
-that file.
+helpers/api_server.py thin Docker HTTP adapter and temporary progress files
+frontend-demo/        host-run presentation only
+```
 
-Start the API and temporary database:
+`data_manager.py` uses PostgreSQL when Docker supplies `DATABASE_URL`. The CLI
+continues to use JSON, so the graded procedural core does not require Docker.
+
+## Run
+
+Copy `.env.example` to `.env` and provide `OPENROUTER_API_KEY`.
+
+Start the main program and temporary database:
 
 ```sh
 docker compose up --build
 ```
 
-Readable Docker addresses:
-
-- API: http://127.0.0.1:8000
-- API health: http://127.0.0.1:8000/health
-- PostgreSQL: `127.0.0.1:5433`
-
-In a second terminal, start the frontend outside Docker:
+Start the editable frontend outside Docker in a second terminal:
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt
 python frontend-demo/app.py
 ```
 
-Open http://127.0.0.1:5050.
+Addresses:
 
-## Processing flow
+- Frontend: http://127.0.0.1:5050
+- Docker API: http://127.0.0.1:8000
+- Health check: http://127.0.0.1:8000/health
+- PostgreSQL: `127.0.0.1:5433`
 
-The project follows an IPO-style procedural flow:
+PostgreSQL uses Docker `tmpfs`. `docker compose down` clears the current data.
+Uploaded images and extraction progress files are also temporary.
 
-1. **Input** — `io_manager.py` validates module context, prompts, and images.
-2. **Process** — `ai_manager.py` extracts events and `logic_manager.py` derives
-   status, priority, and schedule blocks.
-3. **Output** — `storage_manager.py` selects JSON for local CLI work or
-   PostgreSQL for the Docker API.
+## Current proof of concept
 
-The AI may return several assessments from one module pack. Missing values are
-preserved for review rather than causing the entire import to be discarded.
-The frontend displays live elapsed time, AI attempt count, validation, saving,
-and scheduling stages so a slow free-model response does not appear frozen.
+1. Enter one module code and its credits.
+2. Drop all screenshots for that module into one request.
+3. Watch the extraction stages and bounded AI retries.
+4. Review the extracted assessments.
+5. See READY events as small coloured blocks in a weekly strip.
 
-## Folder responsibilities
+Missing deadlines or weights remain visible for correction but stay out of the
+timetable. The saved record shape remains the frozen assignment contract.
 
-- `src/` — graded procedural business logic.
-- `helpers/` — development adapters: HTTP API and short-lived progress state.
-- `frontend-demo/` — host-run presentation only; no scheduling rules.
-- `tests/` — a small MVP safety suite, not a frozen specification.
-- `data/` — JSON fallback for CLI/local experiments; Docker uses PostgreSQL.
-
-Project-owned Python contains no classes. Terminal `print()` calls remain
-confined to `src/io_manager.py`.
-
-## Frozen assessment record
-
-PostgreSQL stores the same record shape used by the original JSON MVP:
-
-```json
-{
-  "record_id": "string",
-  "module": "string",
-  "assessment_type": "string",
-  "deadline": "YYYY-MM-DD or null",
-  "weightage": "number or null",
-  "priority": "HIGH | MEDIUM | LOW | null",
-  "status": "READY | INCOMPLETE | NEEDS_REVIEW | CONFLICT | CONSTRAINED",
-  "missing_fields": [],
-  "issues": [],
-  "revision": 1
-}
-```
-
-## Checks
-
-```sh
-python -m pytest -q
-```
-
-The reduced suite covers the architecture constraints, extraction boundary,
-atomic storage, schedule rules, host frontend/API hand-off, and Docker shape.
+Automated test files are intentionally kept local during this early MVP and are
+ignored by Git to keep the shared repository focused on the handoff code.
