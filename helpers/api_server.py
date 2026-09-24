@@ -191,12 +191,11 @@ def active_job_count():
     )
 
 
-def dashboard_payload(focus_module=None):
-    """Return one module view required by the host frontend."""
-    summary = core_main.start_application(focus_module=focus_module)
+def dashboard_payload():
+    """Return the current single-module view for the host frontend."""
+    summary = core_main.start_application()
     return {
         "schedule": summary["schedule"],
-        "module_profiles": summary["module_profiles"],
         "latest_records": summary["latest_records"],
         "records_loaded": summary["records_loaded"],
         "focus_module": summary["focus_module"],
@@ -298,7 +297,7 @@ def create_app():
 
     @app.get("/api/dashboard")
     def dashboard_api():
-        return jsonify(dashboard_payload(request.args.get("module")))
+        return jsonify(dashboard_payload())
 
     @app.post("/api/extractions")
     def start_extraction_api():
@@ -306,20 +305,10 @@ def create_app():
         if active_job_count() >= MAX_ACTIVE_JOBS:
             return jsonify({"errors": ["Too many extractions are running."]}), 429
 
-        errors = []
-        module_credits = parse_optional_number(
-            request.form.get("module_credits"),
-            "Module credits",
-            errors,
-        )
-        if errors:
-            return jsonify({"errors": errors}), 400
-
         upload_directory = tempfile.mkdtemp(prefix="assessment-upload-")
         try:
             input_source = {
                 "module": request.form.get("module", ""),
-                "module_credits": module_credits,
                 "prompt": request.form.get("prompt", ""),
                 "image_paths": save_uploaded_images(
                     request.files.getlist("source_files"),

@@ -1,10 +1,8 @@
 # Stackplan MVP
 
 Stackplan reads one module's assessment screenshots, extracts every visible
-assessment, and turns valid events into a compact weekly preparation timetable.
-
-The current milestone deliberately handles one module at a time. Multi-module
-competition is the next iteration.
+assessment, and places valid events into a compact Week 1, Week 2, Week 3…
+timetable. This MVP deliberately analyses one module at a time.
 
 ## Procedural flow
 
@@ -12,7 +10,7 @@ competition is the next iteration.
 Input
   -> I/O Manager validates user data
   -> AI Manager extracts structured events
-  -> Logic Manager assigns status, priority, and preparation dates
+  -> Logic Manager assigns status, priority, and deadline week
   -> Data Manager validates and saves the finished records
 Output
 ```
@@ -70,14 +68,15 @@ Uploaded images and extraction progress files are also temporary.
 
 ## Current proof of concept
 
-1. Enter one module code and its credits.
+1. Enter one module code.
 2. Drop all screenshots for that module into one request.
 3. Watch the extraction stages and bounded AI retries.
 4. Review the extracted assessments.
-5. See READY events as small coloured blocks in a weekly strip.
+5. See READY events as small coloured blocks from Week 1 to the final deadline.
 
-Missing deadlines or weights remain visible for correction but stay out of the
-timetable. The saved record shape remains the frozen assignment contract.
+Deadlines use only `Week N` (for example, `Week 3`). Missing weeks or weights
+remain visible for correction but stay out of the timetable. Multiple events in
+the same week stack vertically, with higher priority lower in the stack.
 
 Automated test files are intentionally kept local during this early MVP and are
 ignored by Git to keep the shared repository focused on the handoff code.

@@ -1,6 +1,5 @@
 """OpenRouter communication and AI extraction schema validation."""
 
-from datetime import date
 import base64
 import http.client
 import json
@@ -40,7 +39,7 @@ def build_source_prompt(input_source: Dict[str, Any]) -> str:
     assessment_example = {
         "module": module,
         "assessment_type": "Quiz 1",
-        "deadline": "2026-10-15",
+        "deadline": "Week 5",
         "weightage": 10,
         "missing_fields": [],
         "issues": [],
@@ -57,11 +56,11 @@ def build_source_prompt(input_source: Dict[str, Any]) -> str:
         "the same event across images.\n"
         f"The module is a trusted user fact. Every event must use exactly {module}.\n"
         f"Each event must use exactly these keys: {', '.join(EXTRACTION_FIELDS)}.\n"
-        "Do not calculate status, priority, preparation dates, or module credits.\n"
+        "Do not calculate status or priority.\n"
         "Do not invent missing information. Use null for a missing deadline or "
         "weightage and list its field name in missing_fields.\n"
-        "Dates must use YYYY-MM-DD only when an exact calendar date is supplied. "
-        "A teaching-week label without an academic calendar must become null.\n"
+        "A deadline must use the exact form Week N, for example Week 3. "
+        "Use null unless the source explicitly gives the module week.\n"
         "Each issue must contain type, field, severity, and feedback. Severity "
         "must be info, warning, or error. Conflicting source values must be "
         "reported as an error issue instead of silently choosing one.\n"
@@ -207,14 +206,9 @@ def validate_extraction(extraction: Dict[str, Any]) -> List[str]:
     deadline = extraction["deadline"]
     if deadline is not None:
         if not isinstance(deadline, str):
-            errors.append("deadline must be an ISO date string or null.")
-        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline) is None:
-            errors.append("deadline must use YYYY-MM-DD format.")
-        else:
-            try:
-                date.fromisoformat(deadline)
-            except ValueError:
-                errors.append("deadline must use YYYY-MM-DD format.")
+            errors.append("deadline must be a Week N string or null.")
+        elif re.fullmatch(r"Week ([1-9]|[1-4][0-9]|5[0-2])", deadline) is None:
+            errors.append("deadline must use Week N format.")
 
     weightage = extraction["weightage"]
     if weightage is not None:
@@ -329,6 +323,15 @@ def normalize_source_response(
         normalized = dict(assessment)
         normalized["module"] = normalized_module
         deadline = normalized.get("deadline")
+        if isinstance(deadline, str):
+            week_match = re.fullmatch(
+                r"\s*week\s*([1-9]|[1-4][0-9]|5[0-2])\s*",
+                deadline,
+                flags=re.IGNORECASE,
+            )
+            if week_match:
+                deadline = f"Week {int(week_match.group(1))}"
+                normalized["deadline"] = deadline
         weightage = normalized.get("weightage")
         if "deadline" in normalized and "weightage" in normalized:
             normalized["missing_fields"] = [

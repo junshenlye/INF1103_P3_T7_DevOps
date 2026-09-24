@@ -32,7 +32,7 @@ def initialize_storage() -> bool:
                         record_id TEXT NOT NULL,
                         module TEXT NOT NULL,
                         assessment_type TEXT NOT NULL,
-                        deadline DATE,
+                        deadline SMALLINT,
                         weightage DOUBLE PRECISION,
                         priority TEXT,
                         status TEXT NOT NULL,
@@ -40,14 +40,6 @@ def initialize_storage() -> bool:
                         issues JSONB NOT NULL,
                         revision INTEGER NOT NULL,
                         UNIQUE (record_id, revision)
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS module_profiles (
-                        module TEXT PRIMARY KEY,
-                        credits DOUBLE PRECISION NOT NULL
                     )
                     """
                 )
@@ -82,15 +74,6 @@ def load_records(data_file: str) -> List[Dict[str, Any]]:
     return _load_json_records(data_file)
 
 
-def save_records(records: List[Dict[str, Any]], data_file: str) -> bool:
-    """Replace the CLI JSON store with a complete validated record list."""
-    if database_enabled() or not isinstance(records, list):
-        return False
-    if any(io_manager.validate_record(record) for record in records):
-        return False
-    return _write_json(records, Path(data_file))
-
-
 def save_record_revision(record: Dict[str, Any], data_file: str) -> bool:
     """Append one validated revision to the selected store."""
     return save_record_revisions([record], data_file)
@@ -111,60 +94,15 @@ def save_record_revisions(
     return _save_json_revisions(records_to_add, data_file)
 
 
-def load_module_profiles(module_file: str) -> Dict[str, Dict[str, float]]:
-    """Load module-credit context from the selected store."""
-    if database_enabled():
-        return _load_database_profiles()
-    profiles, error = _load_json_profiles(module_file)
-    if error:
-        LOGGER.error("Could not load module profiles %s: %s", module_file, error)
-        return {}
-    return {
-        module.strip().upper(): {"credits": float(profile["credits"])}
-        for module, profile in profiles.items()
-    }
-
-
-def save_module_profile(module: str, credits: float, module_file: str) -> bool:
-    """Create or update one module-credit profile."""
-    normalized_module = module.strip().upper()
-    if (
-        not normalized_module
-        or isinstance(credits, bool)
-        or not isinstance(credits, (int, float))
-        or not 0 < credits <= 60
-    ):
-        LOGGER.error("Refused invalid module credit metadata")
-        return False
-    if database_enabled():
-        return _save_database_profile(normalized_module, float(credits))
-
-    profiles, error = _load_json_profiles(module_file)
-    if error:
-        LOGGER.error("Refused unsafe module file %s: %s", module_file, error)
-        return False
-    profiles[normalized_module] = {"credits": float(credits)}
-    return _write_json(profiles, Path(module_file))
-
-
-def get_record_history(
-    records: List[Dict[str, Any]],
-    record_id: str,
-) -> List[Dict[str, Any]]:
-    """Return one record's revisions in ascending order."""
-    return sorted(
-        [record for record in records if record.get("record_id") == record_id],
-        key=lambda record: record["revision"],
-    )
-
-
 def get_latest_record(
     records: List[Dict[str, Any]],
     record_id: str,
 ) -> Optional[Dict[str, Any]]:
     """Return the latest revision for one record ID."""
-    history = get_record_history(records, record_id)
-    return history[-1] if history else None
+    matching = [
+        record for record in records if record.get("record_id") == record_id
+    ]
+    return max(matching, key=lambda record: record["revision"], default=None)
 
 
 def latest_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -181,24 +119,6 @@ def next_revision(records: List[Dict[str, Any]], record_id: str) -> int:
     """Return the next append-only revision number for a record ID."""
     latest = get_latest_record(records, record_id)
     return 1 if latest is None else latest["revision"] + 1
-
-
-def filter_records(
-    records: List[Dict[str, Any]],
-    module: Optional[str] = None,
-    status: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Return records matching optional module and status filters."""
-    normalized_module = module.strip().upper() if module else None
-    return [
-        record
-        for record in records
-        if (
-            normalized_module is None
-            or record.get("module", "").strip().upper() == normalized_module
-        )
-        and (status is None or record.get("status") == status)
-    ]
 
 
 def _connect_database():
@@ -234,7 +154,7 @@ def _database_row_to_record(row) -> Dict[str, Any]:
         "record_id": row[0],
         "module": row[1],
         "assessment_type": row[2],
-        "deadline": row[3].isoformat() if row[3] is not None else None,
+        "deadline": f"Week {row[3]}" if row[3] is not None else None,
         "weightage": row[4],
         "priority": row[5],
         "status": row[6],
@@ -273,7 +193,11 @@ def _save_database_records(records: List[Dict[str, Any]]) -> bool:
                             record["record_id"],
                             record["module"],
                             record["assessment_type"],
-                            record["deadline"],
+                            (
+                                int(record["deadline"].split()[1])
+                                if record["deadline"] is not None
+                                else None
+                            ),
                             record["weightage"],
                             record["priority"],
                             record["status"],
@@ -284,39 +208,6 @@ def _save_database_records(records: List[Dict[str, Any]]) -> bool:
                     )
     except Exception:
         LOGGER.exception("Could not append assessment records to PostgreSQL")
-        return False
-    return True
-
-
-def _load_database_profiles() -> Dict[str, Dict[str, float]]:
-    """Load module-credit context from PostgreSQL."""
-    try:
-        with _connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT module, credits FROM module_profiles ORDER BY module")
-                rows = cursor.fetchall()
-    except Exception:
-        LOGGER.exception("Could not load module profiles from PostgreSQL")
-        return {}
-    return {row[0]: {"credits": float(row[1])} for row in rows}
-
-
-def _save_database_profile(module: str, credits: float) -> bool:
-    """Upsert one module-credit profile in PostgreSQL."""
-    try:
-        with _connect_database() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO module_profiles (module, credits)
-                    VALUES (%s, %s)
-                    ON CONFLICT (module)
-                    DO UPDATE SET credits = EXCLUDED.credits
-                    """,
-                    (module, credits),
-                )
-    except Exception:
-        LOGGER.exception("Could not save a module profile to PostgreSQL")
         return False
     return True
 
@@ -373,31 +264,6 @@ def _load_json_records_strict(data_file: str):
         for record in payload
     ):
         return [], "existing data contains an invalid record"
-    return payload, None
-
-
-def _load_json_profiles(module_file: str):
-    """Load module profiles strictly so corrupt data is never overwritten."""
-    path = Path(module_file)
-    if not path.exists():
-        return {}, None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}, "existing module data is unreadable or corrupt"
-    if not isinstance(payload, dict):
-        return {}, "existing module data is not a JSON object"
-    for module, profile in payload.items():
-        if (
-            not isinstance(module, str)
-            or not module.strip()
-            or not isinstance(profile, dict)
-            or set(profile) != {"credits"}
-            or isinstance(profile["credits"], bool)
-            or not isinstance(profile["credits"], (int, float))
-            or not 0 < profile["credits"] <= 60
-        ):
-            return {}, "existing module data contains an invalid profile"
     return payload, None
 
 

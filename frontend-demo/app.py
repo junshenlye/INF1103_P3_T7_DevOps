@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 from urllib import error as url_error
-from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dotenv import load_dotenv
@@ -18,7 +17,6 @@ def empty_dashboard():
     """Return a renderable state while Docker is unavailable."""
     return {
         "schedule": {"blocks": [], "weeks": [], "excluded_records": [], "warnings": []},
-        "module_profiles": {},
         "latest_records": [],
         "records_loaded": 0,
         "focus_module": None,
@@ -49,13 +47,10 @@ def request_api(api_base_url, path, method="GET", payload=None):
         return response_payload, api_error.code
 
 
-def load_dashboard(api_base_url, focus_module=None):
+def load_dashboard(api_base_url):
     """Read one module view from Docker with a friendly offline state."""
-    query = ""
-    if focus_module:
-        query = "?" + url_parse.urlencode({"module": focus_module})
     try:
-        summary, _status = request_api(api_base_url, f"/api/dashboard{query}")
+        summary, _status = request_api(api_base_url, "/api/dashboard")
         return summary, None
     except (OSError, ValueError, json.JSONDecodeError):
         return empty_dashboard(), (
@@ -77,8 +72,8 @@ def create_app(configured_api_url=None):
         static_folder=str(FRONTEND_ROOT / "static"),
     )
 
-    def render_dashboard(result=None, status_code=200, focus_module=None):
-        summary, connection_error = load_dashboard(api_base_url, focus_module)
+    def render_dashboard(result=None, status_code=200):
+        summary, connection_error = load_dashboard(api_base_url)
         return (
             render_template(
                 "index.html",
@@ -93,7 +88,7 @@ def create_app(configured_api_url=None):
 
     @app.get("/")
     def index():
-        return render_dashboard(focus_module=request.args.get("module"))
+        return render_dashboard()
 
     @app.post("/review/<record_id>")
     def review_assessment(record_id):
@@ -110,15 +105,11 @@ def create_app(configured_api_url=None):
         return render_dashboard(
             result,
             status_code=status_code,
-            focus_module=(result.get("record") or {}).get("module"),
         )
 
     @app.get("/api/schedule")
     def schedule_api():
-        summary, connection_error = load_dashboard(
-            api_base_url,
-            request.args.get("module"),
-        )
+        summary, connection_error = load_dashboard(api_base_url)
         if connection_error:
             return jsonify({"errors": [connection_error]}), 503
         return jsonify(summary)

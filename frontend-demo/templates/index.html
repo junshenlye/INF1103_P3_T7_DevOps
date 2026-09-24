@@ -87,20 +87,14 @@
           </div>
 
           <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
-            <div class="field-grid">
-              <label>
-                <span>Module code</span>
-                <input name="module" value="{{ form_values.get('module', '') }}" placeholder="INF1103" maxlength="32" autocomplete="off" required>
-              </label>
-              <label>
-                <span>Module credits</span>
-                <input name="module_credits" value="{{ form_values.get('module_credits', '') }}" type="number" min="0.5" max="60" step="0.5" placeholder="6" required>
-              </label>
-            </div>
+            <label>
+              <span>Module code</span>
+              <input name="module" value="{{ form_values.get('module', '') }}" placeholder="INF1103" maxlength="32" autocomplete="off" required>
+            </label>
 
             <label class="prompt-field">
               <span>Extra context <small>optional when the snapshots are clear</small></span>
-              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: the dates shown are for Trimester 2, or Week 8 starts on 12 October.">{{ form_values.get('prompt', '') }}</textarea>
+              <textarea name="prompt" rows="4" maxlength="4000" placeholder="For example: Tutorial 1–10 together form one 5% assessment.">{{ form_values.get('prompt', '') }}</textarea>
             </label>
 
             <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
@@ -134,35 +128,6 @@
           </form>
         </article>
 
-        <aside class="panel module-panel">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Credit context</p>
-              <h2>Current module</h2>
-            </div>
-          </div>
-          <p class="panel-copy">
-            This MVP validates one module at a time. Its credits adjust how much
-            each assessment contributes to the timetable.
-          </p>
-          <div class="module-list">
-            {% if module_profiles %}
-              {% for module, profile in module_profiles|dictsort %}
-                <div class="module-row">
-                  <span class="module-code">{{ module }}</span>
-                  <span>{{ profile.credits|round(1) }} credits</span>
-                </div>
-              {% endfor %}
-            {% else %}
-              <div class="empty-compact">Import the first module evidence pack to begin.</div>
-            {% endif %}
-          </div>
-          <div class="formula-card">
-            <span>Example</span>
-            <strong>30% × 6 credits = 1.8 load</strong>
-            <small>Priority is normalized against a six-credit module.</small>
-          </div>
-        </aside>
       </section>
 
       <section class="review-section">
@@ -207,7 +172,7 @@
                     </label>
                     <label>
                       <span>Deadline</span>
-                      <input name="deadline" value="{{ record.deadline or '' }}" type="date">
+                      <input name="deadline" value="{{ record.deadline or '' }}" placeholder="Week 3" pattern="Week ([1-9]|[1-4][0-9]|5[0-2])">
                     </label>
                     <label>
                       <span>Weightage</span>
@@ -235,7 +200,7 @@
         <div class="schedule-heading">
           <div>
             <p class="eyebrow">Single-module timetable</p>
-            <h2>{{ focus_module or 'Weekly' }} preparation plan</h2>
+            <h2>{{ focus_module or 'Weekly' }} deadline plan</h2>
             <p>A compact week strip. Each coloured row is one assessment block; higher priority sits lower in its week.</p>
           </div>
           <div class="legend" aria-label="Priority colour legend">
@@ -251,22 +216,19 @@
               {% for week in schedule.weeks %}
                 <article class="week-column">
                   <header>
-                    <span>{{ week.week_start[5:] }}</span>
-                    <small>{{ week.week_end[5:] }}</small>
+                    <span>{{ week.label }}</span>
                   </header>
                   <div class="week-stack">
                     {% if not week.blocks %}
                       <div class="empty-week">Open capacity</div>
                     {% endif %}
                     {% for block in week.blocks %}
-                      <article class="schedule-block priority-{{ block.priority|lower }}" title="Prepare {{ block.start_date }} to {{ block.end_date }}; due {{ block.deadline }}">
+                      <article class="schedule-block priority-{{ block.priority|lower }}" title="{{ block.assessment_type }} is due {{ block.deadline }}">
                         <div class="block-line">
                           <strong>{{ block.assessment_type }}</strong>
-                          <span>{{ block.deadline[5:] }}</span>
                         </div>
                         <div class="block-meta">
                           <span>{{ block.priority }}</span>
-                          <span>{{ block.start_date[5:] }} → {{ block.end_date[5:] }}</span>
                           <span>{{ block.assessment_weightage|round(1) }}%</span>
                         </div>
                       </article>
@@ -280,7 +242,7 @@
           <div class="empty-schedule">
             <span>01</span>
             <h3>Your schedule will appear here</h3>
-            <p>Extract a module evidence pack with future deadlines to create the first preparation blocks.</p>
+            <p>Extract a module evidence pack containing deadlines such as Week 3.</p>
           </div>
         {% endif %}
 

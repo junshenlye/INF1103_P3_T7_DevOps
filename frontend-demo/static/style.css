@@ -211,10 +211,7 @@ h2 {
 }
 
 .workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.75fr);
-  gap: 22px;
-  align-items: start;
+  max-width: 920px;
 }
 
 .panel {
@@ -226,10 +223,6 @@ h2 {
 
 .input-panel {
   padding: clamp(24px, 4vw, 42px);
-}
-
-.module-panel {
-  padding: 30px;
 }
 
 .section-heading,
@@ -252,12 +245,6 @@ h2 {
   font-size: 0.72rem;
   font-weight: 800;
   white-space: nowrap;
-}
-
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
 }
 
 label > span {
@@ -301,11 +288,6 @@ textarea:focus {
   border-color: var(--green);
   background: white;
   box-shadow: 0 0 0 3px rgba(33, 93, 69, 0.1);
-}
-
-.span-two,
-.prompt-field {
-  grid-column: 1 / -1;
 }
 
 .prompt-field {
@@ -529,73 +511,10 @@ textarea:focus {
   font-size: 0.7rem;
 }
 
-.panel-copy {
-  margin: -10px 0 24px;
-  color: var(--muted);
-  font-size: 0.87rem;
-}
-
-.module-list {
-  display: grid;
-  gap: 8px;
-}
-
-.module-row {
-  padding: 12px 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid #e7e8e2;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
 .module-code {
   color: var(--ink);
   font-weight: 850;
   letter-spacing: 0.04em;
-}
-
-.empty-compact {
-  padding: 16px;
-  border-radius: 10px;
-  background: #f1f3ed;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.formula-card {
-  margin-top: 24px;
-  padding: 18px;
-  border-radius: 12px;
-  background: var(--green-dark);
-  color: white;
-}
-
-.formula-card span,
-.formula-card strong,
-.formula-card small {
-  display: block;
-}
-
-.formula-card span {
-  color: var(--lime);
-  font-size: 0.68rem;
-  font-weight: 850;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.formula-card strong {
-  margin: 7px 0 3px;
-  font-family: Georgia, serif;
-  font-size: 1.08rem;
-  font-weight: 500;
-}
-
-.formula-card small {
-  color: #bdd0c5;
 }
 
 .review-section {
@@ -637,8 +556,7 @@ textarea:focus {
   border-top-color: var(--medium);
 }
 
-.review-card.status-conflict,
-.review-card.status-constrained {
+.review-card.status-conflict {
   border-top-color: var(--high);
 }
 
@@ -811,9 +729,9 @@ textarea:focus {
 }
 
 .weekly-grid {
-  min-width: max(100%, calc(var(--week-count) * 190px));
+  min-width: max(100%, calc(var(--week-count) * 140px));
   display: grid;
-  grid-template-columns: repeat(var(--week-count), minmax(180px, 1fr));
+  grid-template-columns: repeat(var(--week-count), minmax(132px, 1fr));
   gap: 6px;
   padding: 7px;
   border: 1px solid var(--line);
@@ -822,7 +740,7 @@ textarea:focus {
 }
 
 .week-column {
-  min-height: 126px;
+  min-height: 112px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
@@ -845,14 +763,9 @@ textarea:focus {
   font-weight: 850;
 }
 
-.week-column > header small {
-  color: var(--muted);
-  font-size: 0.62rem;
-}
-
 .week-stack {
   flex: 1;
-  min-height: 92px;
+  min-height: 78px;
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -913,13 +826,6 @@ textarea:focus {
   color: var(--ink);
   font-size: 0.72rem;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.block-line > span {
-  color: var(--ink);
-  font-size: 0.65rem;
-  font-weight: 800;
   white-space: nowrap;
 }
 
@@ -1002,13 +908,6 @@ footer a {
     padding-top: 52px;
   }
 
-  .workspace-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .module-panel {
-    order: -1;
-  }
 }
 
 @media (max-width: 620px) {
@@ -1028,13 +927,8 @@ footer a {
     font-size: 2.7rem;
   }
 
-  .field-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .span-two,
   .prompt-field {
-    grid-column: auto;
+    margin-top: 16px;
   }
 
   .schedule-heading,

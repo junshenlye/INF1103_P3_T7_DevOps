@@ -1,6 +1,5 @@
 """Procedural orchestration: I/O -> AI -> Logic -> Data."""
 
-from datetime import date
 import logging
 import os
 from pathlib import Path
@@ -13,20 +12,11 @@ from . import ai_manager, data_manager, io_manager, logic_manager
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_FILE = PROJECT_ROOT / "data" / "schedules.json"
-DEFAULT_MODULE_FILE = PROJECT_ROOT / "data" / "modules.json"
 
 
 def resolve_data_file_path(configured_path: Optional[str] = None) -> str:
     """Resolve the CLI JSON record path."""
     return _resolve_path(configured_path or os.getenv("DATA_FILE"), DEFAULT_DATA_FILE)
-
-
-def resolve_module_file_path(configured_path: Optional[str] = None) -> str:
-    """Resolve the CLI JSON module-profile path."""
-    return _resolve_path(
-        configured_path or os.getenv("MODULE_FILE"),
-        DEFAULT_MODULE_FILE,
-    )
 
 
 def _resolve_path(configured_path: Optional[str], default_path: Path) -> str:
@@ -39,44 +29,26 @@ def _resolve_path(configured_path: Optional[str], default_path: Path) -> str:
 
 def start_application(
     data_file: Optional[str] = None,
-    module_file: Optional[str] = None,
-    today: Optional[date] = None,
-    focus_module: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Load the most recent module view for CLI or frontend output."""
+    """Load the most recently analysed module for CLI or frontend output."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
     record_path = resolve_data_file_path(data_file)
-    module_path = resolve_module_file_path(module_file)
     records = data_manager.load_records(record_path)
-    profiles = data_manager.load_module_profiles(module_path)
-    selected_module = _select_module(records, focus_module)
-    latest = data_manager.filter_records(
-        data_manager.latest_records(records),
-        module=selected_module,
-    )
-    visible_profiles = _select_profile(profiles, selected_module)
+    selected_module, module_records = _current_module_records(records)
+    latest = data_manager.latest_records(module_records)
     return {
-        "records": data_manager.filter_records(records, module=selected_module),
         "latest_records": latest,
         "records_loaded": len(latest),
         "data_file": record_path,
-        "module_file": module_path,
         "focus_module": selected_module,
-        "module_profiles": visible_profiles,
-        "schedule": logic_manager.build_schedule(
-            latest,
-            today=today,
-            module_profiles=visible_profiles,
-        ),
+        "schedule": logic_manager.build_schedule(latest),
     }
 
 
 def process_assessment_source(
     input_source: Dict[str, Any],
     data_file: Optional[str] = None,
-    module_file: Optional[str] = None,
     api_caller: Optional[Callable[..., str]] = None,
-    today: Optional[date] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Pass one module evidence pack through every manager in order."""
@@ -88,23 +60,6 @@ def process_assessment_source(
         return _source_failure(source_module, input_errors, progress_callback)
 
     record_path = resolve_data_file_path(data_file)
-    module_path = resolve_module_file_path(module_file)
-    _emit_progress(
-        progress_callback,
-        "module_context",
-        f"Saving credit context for {source_module}.",
-    )
-    if not data_manager.save_module_profile(
-        source_module,
-        input_source["module_credits"],
-        module_path,
-    ):
-        return _source_failure(
-            source_module,
-            ["Module credit metadata could not be saved."],
-            progress_callback,
-        )
-
     normalized_source = dict(input_source)
     normalized_source["module"] = source_module
     ai_result = ai_manager.process_source(
@@ -129,7 +84,6 @@ def process_assessment_source(
     records, errors = _build_records(
         ai_result["extractions"],
         data_manager.load_records(record_path),
-        today,
     )
     if errors:
         return _source_failure(
@@ -161,14 +115,11 @@ def process_assessment_source(
         "preserved": False,
         "schedule": build_current_schedule(
             record_path,
-            today=today,
-            module_file=module_path,
-            focus_module=source_module,
         ),
     }
 
 
-def _build_records(extractions, existing_records, today):
+def _build_records(extractions, existing_records):
     """Pass AI events through Logic Manager and validate its output."""
     used_ids = {record["record_id"] for record in existing_records}
     records = []
@@ -182,7 +133,6 @@ def _build_records(extractions, existing_records, today):
             extraction,
             record_id=record_id,
             revision=1,
-            today=today,
         )
         errors.extend(
             f"assessments[{index}]: {error}"
@@ -229,33 +179,17 @@ def _emit_progress(progress_callback, stage, message, **details):
 
 def build_current_schedule(
     data_file: str,
-    today: Optional[date] = None,
-    module_file: Optional[str] = None,
-    focus_module: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Load and build the latest timetable for one module."""
+    """Build the timetable for the most recently analysed module."""
     records = data_manager.load_records(data_file)
-    selected_module = _select_module(records, focus_module)
-    latest = data_manager.filter_records(
-        data_manager.latest_records(records),
-        module=selected_module,
-    )
-    profiles = data_manager.load_module_profiles(
-        resolve_module_file_path(module_file)
-    )
-    return logic_manager.build_schedule(
-        latest,
-        today=today,
-        module_profiles=_select_profile(profiles, selected_module),
-    )
+    _module, module_records = _current_module_records(records)
+    return logic_manager.build_schedule(data_manager.latest_records(module_records))
 
 
 def correct_assessment(
     record_id: str,
     updates: Dict[str, Any],
     data_file: Optional[str] = None,
-    module_file: Optional[str] = None,
-    today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Append one human-reviewed revision without another AI request."""
     errors = io_manager.validate_correction_input(updates)
@@ -263,7 +197,6 @@ def correct_assessment(
         return {"ok": False, "record": None, "errors": errors}
 
     record_path = resolve_data_file_path(data_file)
-    module_path = resolve_module_file_path(module_file)
     records = data_manager.load_records(record_path)
     latest = data_manager.get_latest_record(records, record_id)
     if latest is None:
@@ -289,7 +222,6 @@ def correct_assessment(
         extraction,
         record_id=record_id,
         revision=data_manager.next_revision(records, record_id),
-        today=today,
     )
     errors = io_manager.validate_record(corrected_record)
     if errors or not data_manager.save_record_revision(corrected_record, record_path):
@@ -304,25 +236,20 @@ def correct_assessment(
         "errors": [],
         "schedule": build_current_schedule(
             record_path,
-            today=today,
-            module_file=module_path,
-            focus_module=latest["module"],
         ),
     }
 
 
-def _select_module(records, requested_module):
-    """Select the requested or most recently written module."""
-    if isinstance(requested_module, str) and requested_module.strip():
-        return requested_module.strip().upper()
-    return records[-1]["module"].strip().upper() if records else None
-
-
-def _select_profile(profiles, module):
-    """Return only the credit context for the active module."""
-    if module in profiles:
-        return {module: profiles[module]}
-    return {}
+def _current_module_records(records):
+    """Keep the MVP view limited to the last analysed module."""
+    if not records:
+        return None, []
+    module = records[-1]["module"].strip().upper()
+    return module, [
+        record
+        for record in records
+        if record["module"].strip().upper() == module
+    ]
 
 
 def _source_module(input_source):
@@ -340,16 +267,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     arguments = io_manager.parse_cli_arguments(argv)
     data_file = arguments.pop("data_file")
-    module_file = arguments.pop("module_file")
     if not io_manager.has_source_input(arguments):
         io_manager.display_startup_summary(
-            start_application(data_file=data_file, module_file=module_file)
+            start_application(data_file=data_file)
         )
         return 0
     result = process_assessment_source(
         arguments,
         data_file=data_file,
-        module_file=module_file,
     )
     io_manager.display_source_result(result)
     return 0 if result["ok"] else 1

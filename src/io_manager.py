@@ -1,7 +1,6 @@
 """Input validation and user-facing output functions."""
 
 import argparse
-from datetime import date
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional
@@ -12,9 +11,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_MODULE_CHARS = 32
 MAX_ASSESSMENT_TYPE_CHARS = 120
 MAX_PROMPT_CHARS = 4000
-SOURCE_INPUT_FIELDS = frozenset(
-    {"module", "module_credits", "prompt", "image_paths"}
-)
+SOURCE_INPUT_FIELDS = frozenset({"module", "prompt", "image_paths"})
 CORRECTION_INPUT_FIELDS = frozenset(
     {"assessment_type", "deadline", "weightage"}
 )
@@ -36,7 +33,6 @@ VALID_STATUSES = (
     "INCOMPLETE",
     "NEEDS_REVIEW",
     "CONFLICT",
-    "CONSTRAINED",
 )
 VALID_SEVERITIES = ("info", "warning", "error")
 
@@ -47,7 +43,6 @@ def parse_cli_arguments(argv: Optional[List[str]] = None) -> Dict[str, Any]:
         description="Extract one module's assessments and build its timetable."
     )
     parser.add_argument("--module")
-    parser.add_argument("--module-credits", type=float)
     parser.add_argument("--prompt", default="")
     parser.add_argument(
         "--image",
@@ -57,7 +52,6 @@ def parse_cli_arguments(argv: Optional[List[str]] = None) -> Dict[str, Any]:
         help="PNG, JPEG, WEBP, or GIF path; may be repeated.",
     )
     parser.add_argument("--data-file")
-    parser.add_argument("--module-file")
     return vars(parser.parse_args(argv))
 
 
@@ -84,15 +78,6 @@ def validate_source_input(payload: Dict[str, Any]) -> List[str]:
         errors.append("Module is required.")
     elif len(module.strip()) > MAX_MODULE_CHARS:
         errors.append(f"Module may contain at most {MAX_MODULE_CHARS} characters.")
-
-    module_credits = payload.get("module_credits")
-    if isinstance(module_credits, bool) or not isinstance(
-        module_credits,
-        (int, float),
-    ):
-        errors.append("Module credits are required and must be a number.")
-    elif not 0 < module_credits <= 60:
-        errors.append("Module credits must be greater than 0 and at most 60.")
 
     prompt = payload.get("prompt", "")
     if not isinstance(prompt, str):
@@ -133,7 +118,7 @@ def validate_correction_input(payload: Dict[str, Any]) -> List[str]:
                 f"Assessment type may contain at most {MAX_ASSESSMENT_TYPE_CHARS} "
                 "characters."
             )
-    errors.extend(_validate_optional_date(payload.get("deadline"), "Deadline"))
+    errors.extend(_validate_optional_week(payload.get("deadline"), "Deadline"))
     errors.extend(
         _validate_optional_percentage(payload.get("weightage"), "Weightage")
     )
@@ -161,7 +146,7 @@ def validate_record(record: Dict[str, Any]) -> List[str]:
         errors.append("module must be a string.")
     if not isinstance(record["assessment_type"], str):
         errors.append("assessment_type must be a string.")
-    errors.extend(_validate_optional_date(record["deadline"], "deadline"))
+    errors.extend(_validate_optional_week(record["deadline"], "deadline"))
     errors.extend(_validate_optional_percentage(record["weightage"], "weightage"))
     if record["priority"] is not None and record["priority"] not in VALID_PRIORITIES:
         errors.append("priority must be HIGH, MEDIUM, LOW, or null.")
@@ -216,17 +201,16 @@ def _validate_image_path(image_path: Any) -> List[str]:
     return []
 
 
-def _validate_optional_date(value: Any, field: str) -> List[str]:
-    """Validate one optional ISO date."""
+def _validate_optional_week(value: Any, field: str) -> List[str]:
+    """Validate one optional Week 1 to Week 52 label."""
     if value is None:
         return []
-    if not isinstance(value, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is None:
-        return [f"{field} must use YYYY-MM-DD format or null."]
-    try:
-        date.fromisoformat(value)
-    except ValueError:
-        return [f"{field} must use YYYY-MM-DD format or null."]
-    return []
+    if isinstance(value, str) and re.fullmatch(
+        r"Week ([1-9]|[1-4][0-9]|5[0-2])",
+        value,
+    ):
+        return []
+    return [f"{field} must use Week N format or null."]
 
 
 def _validate_optional_percentage(value: Any, field: str) -> List[str]:
@@ -248,9 +232,8 @@ def format_schedule(schedule: Dict[str, Any]) -> str:
         lines.append("- No READY assessments can be scheduled yet.")
     for block in blocks:
         lines.append(
-            f"- {block['start_date']} to {block['end_date']}: "
-            f"{block['assessment_type']} ({block['priority']}, "
-            f"due {block['deadline']})"
+            f"- {block['deadline']}: {block['assessment_type']} "
+            f"({block['priority']}, {block['assessment_weightage']:g}%)"
         )
     lines.extend(f"Warning: {warning}" for warning in schedule.get("warnings", []))
     return "\n".join(lines)
