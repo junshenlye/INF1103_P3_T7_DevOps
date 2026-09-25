@@ -13,6 +13,7 @@
   --medium-bg: #fff0c9;
   --high: #d45c4d;
   --high-bg: #ffe0da;
+  --very-high: #8f3455;
   --shadow: 0 18px 50px rgba(35, 47, 40, 0.08);
 }
 
@@ -239,6 +240,7 @@ textarea:focus {
 }
 
 .drop-zone {
+  position: relative;
   margin-top: 22px;
   padding: 25px;
   display: grid;
@@ -249,6 +251,29 @@ textarea:focus {
   text-align: center;
   cursor: pointer;
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.choose-file-button {
+  margin: 8px 0 5px;
+  padding: 7px 11px;
+  border: 1px solid rgba(33, 93, 69, 0.28);
+  border-radius: 8px;
+  background: white;
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
 .drop-zone:hover,
@@ -276,7 +301,7 @@ textarea:focus {
   font-size: 0.92rem;
 }
 
-.drop-zone > span {
+.drop-zone > span:not(.drop-icon):not(.choose-file-button) {
   margin-top: 3px;
   color: var(--muted);
   font-size: 0.76rem;
@@ -673,4 +698,302 @@ footer a {
     scroll-behavior: auto !important;
     transition: none !important;
   }
+}
+
+/* Multi-module trimester pacing additions. */
+.hero-row {
+  margin: 54px 0 30px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.hero-copy {
+  max-width: 680px;
+  margin: 16px 0 0;
+  color: var(--muted);
+}
+
+.week-marker {
+  min-width: 180px;
+  padding: 18px 20px;
+  border: 1px solid rgba(33, 93, 69, 0.2);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.week-marker span,
+.week-marker small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.week-marker strong {
+  display: block;
+  margin: 2px 0;
+  color: var(--green);
+  font-family: Georgia, serif;
+  font-size: 2.6rem;
+  line-height: 1;
+}
+
+.input-panel {
+  max-width: 920px;
+}
+
+.secondary-button,
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.secondary-button {
+  padding: 9px 12px;
+  border: 1px solid rgba(33, 93, 69, 0.25);
+  border-radius: 9px;
+  background: #f3f7ee;
+}
+
+.module-list {
+  display: grid;
+  gap: 14px;
+}
+
+.module-entry {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fbfcf7;
+}
+
+.module-entry-head,
+.module-fields {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.module-entry-head {
+  margin-bottom: 14px;
+}
+
+.module-fields > label:first-child {
+  flex: 2;
+}
+
+.module-fields > label:last-child {
+  flex: 1;
+}
+
+.module-entry .prompt-field,
+.module-entry .drop-zone {
+  margin-top: 14px;
+}
+
+.module-entry textarea {
+  min-height: 82px;
+}
+
+.module-entry .drop-zone {
+  padding: 16px;
+}
+
+.drop-zone > small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.legend-dot.moderate { background: var(--medium); }
+.legend-dot.very-high { background: var(--very-high); }
+
+.week-column {
+  min-height: 190px;
+  padding-top: 3px;
+  border-top: 4px solid var(--low);
+}
+
+.week-column.pressure-moderate { border-top-color: var(--medium); }
+.week-column.pressure-high { border-top-color: var(--high); }
+.week-column.pressure-very-high { border-top-color: var(--very-high); }
+.week-column.is-current { background: rgba(223, 240, 106, 0.13); }
+
+.week-column > header strong {
+  color: var(--muted);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.pressure-meter {
+  height: 3px;
+  margin: 6px 8px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7e9e2;
+}
+
+.pressure-meter i {
+  display: block;
+  width: calc(min(var(--pressure), 80) / 80 * 100%);
+  height: 100%;
+  background: currentColor;
+}
+
+.schedule-block {
+  display: grid;
+  gap: 2px;
+  border-color: rgba(33, 93, 69, 0.18);
+  background: white;
+  color: var(--green);
+}
+
+.schedule-block small,
+.schedule-block span {
+  color: var(--muted);
+  font-size: 0.58rem;
+}
+
+.schedule-block strong {
+  color: var(--ink);
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.ranking-section,
+.signals-section {
+  margin: 48px 0;
+}
+
+.coverage-strip {
+  margin: -10px 0 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.coverage-strip span {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.coverage-strip .is-complete {
+  border-color: rgba(33, 93, 69, 0.28);
+  background: #eef5e8;
+  color: var(--green);
+}
+
+.coverage-strip .is-incomplete {
+  border-color: #ead8a6;
+  background: #fffaf0;
+  color: #775312;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+th,
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+td strong,
+td small {
+  display: block;
+}
+
+td small {
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+tbody tr:last-child td { border-bottom: 0; }
+
+.signal-list,
+.feedback-strip {
+  display: grid;
+  gap: 10px;
+}
+
+.signal-list {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.signal-list > div {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.signal-list strong,
+.signal-list span {
+  display: block;
+  font-size: 0.76rem;
+}
+
+.signal-list span {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.feedback-strip {
+  margin: 44px 0 60px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.feedback-strip > div {
+  padding: 17px 18px;
+  border: 1px solid #ead8a6;
+  border-radius: 11px;
+  background: #fffaf0;
+}
+
+.feedback-strip ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #64583c;
+  font-size: 0.76rem;
+}
+
+@media (max-width: 620px) {
+  .hero-row,
+  .module-fields {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .week-marker { min-width: 0; }
 }

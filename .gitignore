@@ -5,6 +5,5 @@
 __pycache__/
 *.py[cod]
 tests/
-test_case/
 requirements-dev.txt
 data/

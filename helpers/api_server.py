@@ -22,17 +22,46 @@ from src import main as core_main  # noqa: E402
 LOGGER = logging.getLogger(__name__)
 
 
-def save_uploaded_images(uploaded_files, target_directory):
+def save_uploaded_files(uploaded_files, target_directory, name_prefix=""):
     """Save uploads only for the lifetime of one extraction."""
-    image_paths = []
+    file_paths = []
     for index, uploaded_file in enumerate(uploaded_files):
         if not uploaded_file or not uploaded_file.filename:
             continue
         safe_name = secure_filename(uploaded_file.filename) or f"upload-{index}"
-        target_path = Path(target_directory) / f"{index}-{safe_name}"
+        target_path = Path(target_directory) / f"{name_prefix}{index}-{safe_name}"
         uploaded_file.save(target_path)
-        image_paths.append(str(target_path))
-    return image_paths
+        file_paths.append(str(target_path))
+    return file_paths
+
+
+def save_uploaded_images(uploaded_files, target_directory):
+    """Backward-compatible alias for the former image-only endpoint."""
+    return save_uploaded_files(uploaded_files, target_directory)
+
+
+def _frontend_modules(form, files, target_directory):
+    """Turn compact indexed multipart fields into the core request shape."""
+    try:
+        module_count = int(form.get("module_count", "1"))
+    except ValueError:
+        module_count = 0
+    modules = []
+    # Keep one extra item so the IO manager can return its explicit 20-module error.
+    for index in range(max(0, min(module_count, 21))):
+        modules.append(
+            {
+                "module_name": form.get(f"module_name_{index}", ""),
+                "credit_units": form.get(f"credit_units_{index}", ""),
+                "additional_context": form.get(f"additional_context_{index}", ""),
+                "files": save_uploaded_files(
+                    files.getlist(f"source_files_{index}"),
+                    target_directory,
+                    name_prefix=f"module-{index}-",
+                ),
+            }
+        )
+    return {"modules": modules}
 
 
 def create_app():
@@ -73,15 +102,19 @@ def create_app():
     def extraction_api():
         try:
             with tempfile.TemporaryDirectory(prefix="assessment-upload-") as directory:
-                result = core_main.process_request(
-                    {
+                if "module_count" in request.form:
+                    input_data = _frontend_modules(
+                        request.form, request.files, directory
+                    )
+                else:
+                    input_data = {
                         "module": request.form.get("module", ""),
                         "prompt": request.form.get("prompt", ""),
                         "image_paths": save_uploaded_images(
                             request.files.getlist("source_files"), directory
                         ),
                     }
-                )
+                result = core_main.process_request(input_data)
         except Exception:
             LOGGER.exception("Assessment extraction stopped unexpectedly")
             return jsonify({"errors": ["The schedule could not be created."]}), 500

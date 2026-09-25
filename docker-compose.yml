@@ -1,25 +1,11 @@
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    environment:
-      API_PORT: 8000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-stackplan}:${POSTGRES_PASSWORD:-stackplan_dev}@db:5432/${POSTGRES_DB:-stackplan}
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "${API_PORT:-8000}:8000"
-
   db:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-stackplan}
       POSTGRES_USER: ${POSTGRES_USER:-stackplan}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stackplan_dev}
+      PGDATA: /var/lib/postgresql/data/pgdata
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stackplan} -d ${POSTGRES_DB:-stackplan}"]
       interval: 2s
@@ -27,5 +13,6 @@ services:
       retries: 15
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
+    # Test-only storage. Restarting or stopping this container clears the database.
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql/data:rw,size=256m
