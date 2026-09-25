@@ -16,23 +16,7 @@ def process_input(input_data):
     if errors:
         return None, errors
 
-    modules = []
-    for raw_module in input_data["modules"]:
-        raw_credits = raw_module.get("credit_units")
-        credits = float(raw_credits) if raw_credits not in (None, "") else None
-        if credits is not None and credits.is_integer():
-            credits = int(credits)
-        modules.append(
-            {
-                "module_name": str(raw_module["module_name"]).strip().upper(),
-                "credit_units": credits,
-                "files": list(raw_module.get("files", [])),
-                "additional_context": str(
-                    raw_module.get("additional_context", "")
-                ).strip(),
-            }
-        )
-    return {"modules": modules}, []
+    return {"modules": _normalize_modules(input_data["modules"])}, []
 
 
 def validate_modules_input(input_data):
@@ -46,55 +30,111 @@ def validate_modules_input(input_data):
         return [f"A maximum of {MAX_MODULES} modules can be processed at once."]
 
     errors = []
-    names = []
+    seen_module_names = set()
+    duplicate_names = set()
     for index, module in enumerate(modules, start=1):
-        prefix = f"Module {index}"
-        if not isinstance(module, dict):
-            errors.append(f"{prefix} must be an object.")
-            continue
-        name = module.get("module_name")
-        if not isinstance(name, str) or not name.strip():
-            errors.append(f"{prefix} needs a module name or code.")
-        else:
-            names.append(name.strip().upper())
+        module_errors, normalized_name = _validate_module(module, index)
+        errors.extend(module_errors)
+        if normalized_name is not None:
+            if normalized_name in seen_module_names:
+                duplicate_names.add(normalized_name)
+            seen_module_names.add(normalized_name)
 
-        credits = module.get("credit_units")
-        if credits not in (None, ""):
-            try:
-                numeric_credits = float(credits)
-                if not 0 < numeric_credits <= 60:
-                    raise ValueError
-            except (TypeError, ValueError):
-                errors.append(f"{prefix} credit units must be a positive number.")
-
-        context = module.get("additional_context", "")
-        files = module.get("files", [])
-        if not isinstance(context, str):
-            errors.append(f"{prefix} additional context must be text.")
-        if not isinstance(files, list):
-            errors.append(f"{prefix} files must be supplied as a list.")
-            continue
-        if (not isinstance(context, str) or not context.strip()) and not files:
-            errors.append(f"{prefix} needs assessment information or a file.")
-        errors.extend(_validate_files(files, prefix))
-
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        errors.append(f"Remove duplicate modules: {', '.join(duplicates)}.")
+    if duplicate_names:
+        errors.append(
+            f"Remove duplicate modules: {', '.join(sorted(duplicate_names))}."
+        )
     return errors
+
+
+def _normalize_modules(raw_modules):
+    """Return modules in the stable shape used by downstream services."""
+    modules = []
+    for raw_module in raw_modules:
+        raw_credits = raw_module.get("credit_units")
+        credits = float(raw_credits) if raw_credits not in (None, "") else None
+        if credits is not None and credits.is_integer():
+            credits = int(credits)
+
+        modules.append(
+            {
+                "module_name": str(raw_module["module_name"]).strip().upper(),
+                "credit_units": credits,
+                "files": list(raw_module.get("files", [])),
+                "additional_context": str(
+                    raw_module.get("additional_context", "")
+                ).strip(),
+            }
+        )
+    return modules
+
+
+def _validate_module(module, index):
+    """Return one module's errors and its normalized name when available."""
+    prefix = f"Module {index}"
+    errors = []
+    if not isinstance(module, dict):
+        return [f"{prefix} must be an object."], None
+
+    name = module.get("module_name")
+    normalized_name = None
+    if not isinstance(name, str) or not name.strip():
+        errors.append(f"{prefix} needs a module name or code.")
+    else:
+        normalized_name = name.strip().upper()
+
+    errors.extend(_validate_credit_units(module.get("credit_units"), prefix))
+
+    context = module.get("additional_context", "")
+    files = module.get("files", [])
+    if not isinstance(context, str):
+        errors.append(f"{prefix} additional context must be text.")
+    if not isinstance(files, list):
+        errors.append(f"{prefix} files must be supplied as a list.")
+        return errors, normalized_name
+    if (not isinstance(context, str) or not context.strip()) and not files:
+        errors.append(f"{prefix} needs assessment information or a file.")
+    errors.extend(_validate_files(files, prefix))
+    return errors, normalized_name
+
+
+def _validate_credit_units(credit_units, prefix):
+    """Return an error when supplied credit units are outside the accepted range."""
+    if credit_units in (None, ""):
+        return []
+    try:
+        numeric_credits = float(credit_units)
+        if not 0 < numeric_credits <= 60:
+            raise ValueError
+    except (TypeError, ValueError):
+        return [f"{prefix} credit units must be a positive number."]
+    return []
 
 
 def _validate_files(files, prefix):
+    """Return active-request errors for invalid evidence paths."""
     errors = []
     for file_path in files:
-        path = Path(file_path) if isinstance(file_path, str) else None
-        if path is None or not path.is_file():
+        path, issue = _check_file(file_path, SUPPORTED_FILES)
+        if issue == "missing":
             errors.append(f"{prefix} file was not found: {file_path}")
-        elif path.suffix.lower() not in SUPPORTED_FILES:
+        elif issue == "unsupported":
             errors.append(f"{prefix} has an unsupported file type: {path.name}")
-        elif path.stat().st_size > MAX_FILE_BYTES:
+        elif issue == "oversized":
             errors.append(f"{prefix} file exceeds 10 MB: {path.name}")
     return errors
+
+
+def _check_file(file_path, supported_extensions):
+    """Return a path and its first filesystem or extension issue."""
+    path = Path(file_path) if isinstance(file_path, str) else None
+    if path is None or not path.is_file():
+        return path, "missing"
+    if path.suffix.lower() not in supported_extensions:
+        return path, "unsupported"
+    if path.stat().st_size > MAX_FILE_BYTES:
+        return path, "oversized"
+    return path, None
 
 
 def validate_input(input_data):
@@ -116,12 +156,19 @@ def validate_input(input_data):
     if not prompt.strip() and not images:
         errors.append("Add at least one screenshot or some context.")
 
+    errors.extend(_validate_legacy_images(images))
+    return errors
+
+
+def _validate_legacy_images(images):
+    """Return legacy-request errors for invalid image paths."""
+    errors = []
     for image in images:
-        path = Path(image) if isinstance(image, str) else None
-        if path is None or not path.is_file():
+        _path, issue = _check_file(image, SUPPORTED_IMAGES)
+        if issue == "missing":
             errors.append(f"Image was not found: {image}")
-        elif path.suffix.lower() not in SUPPORTED_IMAGES:
+        elif issue == "unsupported":
             errors.append(f"Unsupported image type: {image}")
-        elif path.stat().st_size > MAX_FILE_BYTES:
+        elif issue == "oversized":
             errors.append(f"Image exceeds 10 MB: {image}")
     return errors
