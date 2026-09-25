@@ -1,4 +1,4 @@
-"""Store the current single-module assessment plan in PostgreSQL."""
+"""Persist pipeline inputs and outputs without owning business logic."""
 
 import json
 import logging
@@ -9,24 +9,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 def initialize_storage():
-    """Create the one table used by the MVP."""
+    """Create one disposable PostgreSQL slot for the current plan."""
+    if not _database_configured():
+        LOGGER.error("DATABASE_URL is required; local file persistence is disabled")
+        return False
     try:
         with _connect() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS assessment_records (
-                        id BIGSERIAL PRIMARY KEY,
-                        module TEXT NOT NULL,
-                        assessment_type TEXT NOT NULL,
-                        deadline SMALLINT,
-                        weightage DOUBLE PRECISION,
-                        priority TEXT,
-                        status TEXT NOT NULL,
-                        issues JSONB NOT NULL
-                    )
-                    """
-                )
+            _ensure_schema(connection)
     except Exception:
         LOGGER.exception("Could not initialize PostgreSQL")
         return False
@@ -35,6 +24,8 @@ def initialize_storage():
 
 def storage_is_ready():
     """Return whether PostgreSQL can answer a small query."""
+    if not _database_configured():
+        return False
     try:
         with _connect() as connection:
             with connection.cursor() as cursor:
@@ -45,65 +36,88 @@ def storage_is_ready():
 
 
 def save_plan(plan):
-    """Replace the disposable store with the latest single-module result."""
+    """Replace the single disposable plan."""
+    if not _database_configured():
+        LOGGER.error("Cannot save a plan without DATABASE_URL")
+        return False
     try:
         with _connect() as connection:
+            _ensure_schema(connection)
             with connection.cursor() as cursor:
-                cursor.execute("DELETE FROM assessment_records")
-                for record in plan["assessments"]:
-                    deadline = record["deadline"]
-                    cursor.execute(
-                        """
-                        INSERT INTO assessment_records (
-                            module, assessment_type, deadline, weightage,
-                            priority, status, issues
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-                        """,
-                        (
-                            record["module"],
-                            record["assessment_type"],
-                            int(deadline.split()[1]) if deadline else None,
-                            record["weightage"],
-                            record["priority"],
-                            record["status"],
-                            json.dumps(record["issues"]),
-                        ),
-                    )
+                cursor.execute(
+                    """
+                    INSERT INTO current_plan (slot, plan)
+                    VALUES (TRUE, %s::jsonb)
+                    ON CONFLICT (slot) DO UPDATE SET plan = EXCLUDED.plan
+                    """,
+                    (json.dumps(plan),),
+                )
     except Exception:
         LOGGER.exception("Could not save the assessment plan")
         return False
     return True
 
 
-def load_assessments():
-    """Load the current module assessments in insertion order."""
+def save(input_data, ai_result, pacing_result):
+    """Store the latest normalized input, AI output, and final pacing result."""
+    safe_input = {
+        "modules": [
+            {
+                "module_name": module.get("module_name"),
+                "credit_units": module.get("credit_units"),
+                "additional_context": module.get("additional_context", ""),
+                "files": [
+                    {"name": os.path.basename(path)}
+                    for path in module.get("files", [])
+                ],
+            }
+            for module in input_data.get("modules", [])
+        ]
+    }
+    record = {
+        "input_data": safe_input,
+        "ai_result": ai_result,
+        "pacing_result": pacing_result,
+    }
+    return save_plan(record)
+
+
+def load_plan():
+    """Load the current plan or an empty dashboard."""
+    if not _database_configured():
+        return _empty_plan()
     try:
         with _connect() as connection:
+            _ensure_schema(connection)
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT module, assessment_type, deadline, weightage,
-                           priority, status, issues
-                    FROM assessment_records
-                    ORDER BY id
-                    """
-                )
-                rows = cursor.fetchall()
+                cursor.execute("SELECT plan FROM current_plan WHERE slot = TRUE")
+                row = cursor.fetchone()
     except Exception:
         LOGGER.exception("Could not load the assessment plan")
-        return []
-    return [
-        {
-            "module": row[0],
-            "assessment_type": row[1],
-            "deadline": f"Week {row[2]}" if row[2] is not None else None,
-            "weightage": row[3],
-            "priority": row[4],
-            "status": row[5],
-            "issues": row[6],
-        }
-        for row in rows
-    ]
+        return _empty_plan()
+    if row is None:
+        return _empty_plan()
+    record = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    if isinstance(record, dict) and isinstance(record.get("pacing_result"), dict):
+        return record["pacing_result"]
+    return record
+
+
+def _empty_plan():
+    """Return an empty pacing dashboard."""
+    return {
+        "trimester_context": {},
+        "current_week": None,
+        "relative_assessment_ranking": [],
+        "module_weight_coverage": [],
+        "timeline": [],
+        "pressure_by_week": [],
+        "overlaps": [],
+        "clusters": [],
+        "overall_pacing": {},
+        "comments": [],
+        "user_checklist": [],
+    }
 
 
 def _connect():
@@ -111,3 +125,20 @@ def _connect():
     import psycopg
 
     return psycopg.connect(os.environ["DATABASE_URL"])
+
+
+def _ensure_schema(connection):
+    """Recreate the disposable table after a database restart when needed."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS current_plan (
+                slot BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (slot),
+                plan JSONB NOT NULL
+            )
+            """
+        )
+
+
+def _database_configured():
+    return bool(os.getenv("DATABASE_URL", "").strip())

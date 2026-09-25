@@ -3,183 +3,81 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AI-assisted academic workload planner">
-    <title>Stackplan — Academic workload planner</title>
+    <meta name="description" content="Trimester assessment pacing timeline">
+    <title>Stackplan — Trimester pacing</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="{{ url_for('static', filename='app.js') }}" defer></script>
   </head>
   <body data-api-base="{{ api_base_url }}">
     <header class="site-header">
-      <a class="brand" href="{{ url_for('index') }}" aria-label="Stackplan home">
-        <span class="brand-mark">S</span>
-        <span>Stackplan</span>
-      </a>
-      <div class="header-status">
-        <span class="status-dot" aria-hidden="true"></span>
-        {{ schedule.blocks|length }} scheduled
-      </div>
+      <a class="brand" href="{{ url_for('index') }}" aria-label="Stackplan home"><span class="brand-mark">S</span><span>Stackplan</span></a>
+      <div class="header-status"><span class="status-dot" aria-hidden="true"></span>{{ relative_assessment_ranking|length }} assessments mapped</div>
     </header>
 
     <main class="page-shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Academic workload, made visible</p>
-          <h1>Turn module evidence into a schedule you can act on.</h1>
-          <p class="hero-copy">
-            Name the module once, drop its assessment snapshots, and let the AI
-            extract every quiz, assignment, project, and submission it can find.
-          </p>
-        </div>
-        <div class="hero-note">
-          <span>Privacy note</span>
-          Use non-confidential images without personal data on the free AI endpoint.
-        </div>
+      {% if connection_error %}<section class="result-banner is-error" role="alert"><div><strong>The configured API is not connected</strong><span>{{ connection_error }}</span></div></section>{% endif %}
+
+      <section class="hero-row">
+        <div><p class="eyebrow">AY2026/27 · Trimester 1</p><h1>See the trimester’s pace.</h1><p class="hero-copy">Map assessment timing, academic importance, overlaps, and pressure—without turning it into a study planner.</p></div>
+        <div class="week-marker"><span>Current trimester week</span><strong>{{ current_week if current_week else '—' }}</strong>{% if trimester_context.is_recess %}<small>Recess week</small>{% endif %}</div>
       </section>
 
-      {% if connection_error %}
-        <section class="result-banner is-error" role="alert">
-          <div>
-            <strong>Docker API is not connected</strong>
-            <span>{{ connection_error }}</span>
+      <section class="panel input-panel">
+        <div class="section-heading"><div><p class="eyebrow">Assessment evidence</p><h2>Add your modules</h2></div><button class="secondary-button" type="button" id="add-module">+ Add module</button></div>
+        <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
+          <input type="hidden" name="module_count" id="module-count" value="0">
+          <div id="module-list" class="module-list"></div>
+          <button class="primary-button" type="submit"><span>Build pacing timeline</span><span aria-hidden="true">→</span></button>
+          <section class="progress-panel" id="extraction-progress" aria-live="polite" hidden><div class="progress-heading"><strong id="progress-stage">Preparing evidence…</strong><span id="progress-elapsed">0.0s</span></div><p id="progress-message">Each module is being interpreted and placed on one trimester timeline.</p></section>
+        </form>
+      </section>
+
+      <template id="module-template">
+        <article class="module-entry">
+          <div class="module-entry-head"><strong>Module <span data-module-number></span></strong><button type="button" class="text-button" data-remove-module>Remove</button></div>
+          <div class="module-fields">
+            <label><span>Module name or code</span><input data-field="module_name" maxlength="64" placeholder="Module code" required></label>
+            <label><span>Credit units <small>optional</small></span><input data-field="credit_units" type="number" min="0.5" max="60" step="0.5" placeholder="6"></label>
           </div>
-        </section>
-      {% endif %}
-
-      <section class="workspace-grid">
-        <article class="panel input-panel">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Module evidence pack</p>
-              <h2>Extract every assessment</h2>
-            </div>
-            <span class="step-badge">AI validated</span>
-          </div>
-
-          <form action="{{ api_base_url }}/api/extractions" method="post" enctype="multipart/form-data" id="assessment-form">
-            <label>
-              <span>Module code</span>
-              <input name="module" placeholder="INF1103" maxlength="32" autocomplete="off" required>
-            </label>
-
-            <label class="prompt-field">
-              <span>Extra context <small>optional when the snapshots are clear</small></span>
-              <textarea name="prompt" rows="4" maxlength="4000" placeholder="Add context only when the screenshots use unusual wording or week numbering."></textarea>
-            </label>
-
-            <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-controls="source-files">
-              <input id="source-files" name="source_files" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-              <div class="drop-icon" aria-hidden="true">↥</div>
-              <strong>Drop all snapshots for this module</strong>
-              <span>The AI reads them together · PNG, JPEG, WEBP, GIF · 10 MB each</span>
-              <div id="file-list" class="file-list" aria-live="polite"></div>
-            </div>
-
-            <button class="primary-button" type="submit">
-              <span>Extract assessment events</span>
-              <span aria-hidden="true">→</span>
-            </button>
-
-            <section class="progress-panel" id="extraction-progress" aria-live="polite" hidden>
-              <div class="progress-heading">
-                <div>
-                  <span class="progress-kicker">Live extraction progress</span>
-                  <strong id="progress-stage">Preparing evidence pack…</strong>
-                </div>
-                <span id="progress-elapsed">0.0s</span>
-              </div>
-              <div class="progress-track" aria-hidden="true">
-                <span id="progress-bar"></span>
-              </div>
-              <p id="progress-message">The request is being prepared.</p>
-              <ol id="progress-events" class="progress-events"></ol>
-              <p class="progress-note">Keep this tab open. Free model responses may take a while, but the timer and stages will continue updating.</p>
-            </section>
-          </form>
+          <label class="prompt-field"><span>Assessment information <small>optional when files are clear</small></span><textarea data-field="additional_context" rows="3" maxlength="8000" placeholder="Paste assessment names, weightages, dates, week ranges, or recurrence details."></textarea></label>
+          <label class="drop-zone" data-drop-zone tabindex="0">
+            <input class="file-input" data-field="source_files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.txt,.md,.csv,.json,.docx" multiple>
+            <span class="drop-icon" aria-hidden="true">↥</span><strong>Drop assessment files here</strong><span class="choose-file-button">Choose from folder</span><small>Images, PDF, DOCX, or text · 10 MB each</small><div class="file-list" aria-live="polite"></div>
+          </label>
         </article>
+      </template>
 
+      <section class="schedule-section" aria-labelledby="timeline-title">
+        <div class="schedule-heading"><div><p class="eyebrow">Trimester pacing timeline</p><h2 id="timeline-title">Pressure by week</h2><p>Each assessment is shown where it occurs. Recurring assessments appear in every known week.</p></div><div class="legend" aria-label="Pressure legend"><span><i class="legend-dot low"></i>Low</span><span><i class="legend-dot moderate"></i>Moderate</span><span><i class="legend-dot high"></i>High</span><span><i class="legend-dot very-high"></i>Very high</span></div></div>
+        {% if timeline %}
+          <div class="timeline-scroll"><div class="weekly-grid" style="--week-count: {{ timeline|length }}">
+            {% for week in timeline %}<article class="week-column pressure-{{ week.pressure|replace('_', '-') }} {% if week.week == current_week %}is-current{% endif %}">
+              <header><span>{{ week.label }}</span><strong>{{ week.pressure|replace('_', ' ')|title }}</strong></header><div class="pressure-meter"><i style="--pressure: {{ [week.pressure_score, 80]|min }}"></i></div>
+              <div class="week-stack">{% if not week.assessments %}<div class="empty-week">No assessments</div>{% endif %}{% for item in week.assessments %}<article class="schedule-block"><small>{{ item.module_name }} · {{ item.assessment_type|title }}</small><strong>{{ item.assessment_name }}</strong><span>{% if item.weightage_percent is not none %}{{ item.weightage_percent|round(1) }}%{% if item.recurring and item.weightage_scope == 'total' %} total{% elif item.weightage_scope == 'per_occurrence' %} each{% endif %}{% else %}Weight unknown{% endif %}</span></article>{% endfor %}</div>
+            </article>{% endfor %}
+          </div></div>
+        {% else %}<div class="empty-schedule"><span>01</span><h3>Your pacing timeline will appear here</h3><p>Add one or more modules and their assessment evidence.</p></div>{% endif %}
       </section>
 
-      <section class="schedule-section">
-        <div class="schedule-heading">
-          <div>
-            <p class="eyebrow">Single-module timetable</p>
-            <h2>{{ module or 'Weekly' }} deadline plan</h2>
-            <p>A compact week strip. Each coloured row is one assessment block; higher priority sits lower in its week.</p>
-          </div>
-          <div class="legend" aria-label="Priority colour legend">
-            <span><i class="legend-dot low"></i>Low</span>
-            <span><i class="legend-dot medium"></i>Medium</span>
-            <span><i class="legend-dot high"></i>High</span>
-          </div>
-        </div>
+      {% if relative_assessment_ranking %}<section class="ranking-section">
+        <div class="schedule-heading"><div><p class="eyebrow">Relative assessment ranking</p><h2>Importance × proximity</h2><p>Academic importance is weightage × credit units. Proximity is higher for nearer assessment weeks.</p></div></div>
+        {% if module_weight_coverage %}<div class="coverage-strip" aria-label="Module assessment weight coverage">{% for module in module_weight_coverage %}<span class="{% if module.complete %}is-complete{% else %}is-incomplete{% endif %}"><strong>{{ module.module_name }}</strong> {{ module.known_weightage_percent|round(1) }}%{% if module.unknown_weight_count %} known{% endif %}</span>{% endfor %}</div>{% endif %}
+        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Assessment</th><th>Due</th><th>Importance</th><th>Proximity</th><th>Relative score</th></tr></thead><tbody>
+          {% for item in relative_assessment_ranking %}<tr><td>{{ item.rank or '—' }}</td><td><strong>{{ item.assessment_name }}</strong><small>{{ item.module_name }} · {{ item.assessment_type|title }}{% if item.recurring and item.weightage_scope == 'total' %} · collective weight{% endif %}</small></td><td>{{ item.timing_label }}</td><td>{{ item.academic_importance if item.academic_importance is not none else 'Incomplete' }}</td><td>{{ item.proximity_score if item.proximity_score is not none else '—' }}</td><td>{{ item.relative_score if item.relative_score is not none else 'Incomplete' }}</td></tr>{% endfor %}
+        </tbody></table></div>
+      </section>{% endif %}
 
-        {% if schedule.weeks %}
-          <div class="timeline-scroll">
-            <div class="weekly-grid" style="--week-count: {{ schedule.weeks|length }}">
-              {% for week in schedule.weeks %}
-                <article class="week-column">
-                  <header>
-                    <span>{{ week.label }}</span>
-                  </header>
-                  <div class="week-stack">
-                    {% if not week.blocks %}
-                      <div class="empty-week">Open capacity</div>
-                    {% endif %}
-                    {% for block in week.blocks %}
-                      <article class="schedule-block priority-{{ block.priority|lower }}" title="{{ block.assessment_type }} is due {{ block.deadline }}">
-                        <div class="block-line">
-                          <strong>{{ block.assessment_type }}</strong>
-                        </div>
-                        <div class="block-meta">
-                          <span>{{ block.priority }}</span>
-                          <span>{{ block.weightage|round(1) }}%</span>
-                        </div>
-                      </article>
-                    {% endfor %}
-                  </div>
-                </article>
-              {% endfor %}
-            </div>
-          </div>
-        {% else %}
-          <div class="empty-schedule">
-            <span>01</span>
-            <h3>Your schedule will appear here</h3>
-            <p>Extract a module evidence pack containing deadlines such as Week 3.</p>
-          </div>
-        {% endif %}
+      {% if overlaps or clusters %}<section class="signals-section"><div class="schedule-heading"><div><p class="eyebrow">Pacing signals</p><h2>Overlaps and clusters</h2></div></div><div class="signal-list">
+        {% for overlap in overlaps %}<div><strong>Week {{ overlap.week }} · {{ overlap.pressure|replace('_', ' ')|title }}</strong><span>{{ overlap.assessments|join(' · ') }}</span></div>{% endfor %}
+        {% for cluster in clusters %}<div><strong>Cluster · Weeks {{ cluster.start_week }}–{{ cluster.end_week }}</strong><span>{{ cluster.assessment_count }} occurrences across {{ cluster.weeks|length }} week(s)</span></div>{% endfor %}
+      </div></section>{% endif %}
 
-      </section>
-
-      {% if checklist %}
-        <section class="checklist-section" aria-labelledby="checklist-title">
-          <div class="schedule-heading">
-            <div>
-              <p class="eyebrow">Missing timetable information</p>
-              <h2 id="checklist-title">What to add next</h2>
-              <p>These items were not placed because a timetable fact was missing or ambiguous. Add the requested material in a later upload.</p>
-            </div>
-            <span class="checklist-count">{{ checklist|length }} to review</span>
-          </div>
-          <div class="checklist-grid">
-            {% for entry in checklist %}
-              <article class="checklist-card">
-                <span>Not scheduled</span>
-                <h3>{{ entry.assessment_type }}</h3>
-                <ul>
-                  {% for item in entry['items'] %}<li>{{ item }}</li>{% endfor %}
-                </ul>
-              </article>
-            {% endfor %}
-          </div>
-        </section>
-      {% endif %}
+      {% if comments or user_checklist %}<section class="feedback-strip">
+        {% if comments %}<div><p class="eyebrow">Comments / missing information</p><ul>{% for comment in comments %}<li>{{ comment }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if user_checklist %}<div><p class="eyebrow">User checklist</p><ul>{% for item in user_checklist %}<li>{{ item }}</li>{% endfor %}</ul></div>{% endif %}
+      </section>{% endif %}
     </main>
-
-    <footer>
-      <span>Input → AI → Logic → Data</span>
-      <a href="{{ url_for('schedule_api') }}">Schedule JSON</a>
-    </footer>
+    <footer><span>IO → AI extraction → Deterministic logic → Data</span><a href="{{ url_for('schedule_api') }}">Pacing JSON</a></footer>
   </body>
 </html>

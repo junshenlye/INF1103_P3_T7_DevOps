@@ -1,6 +1,5 @@
-"""Hand one module request from I/O to AI to Logic to Data."""
+"""Coordinate the IO, AI, logic, and data managers."""
 
-import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,62 +10,77 @@ from . import ai_manager, data_manager, io_manager, logic_manager
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def process_request(input_data, api_caller=None, progress_callback=None):
-    """Run the complete single-module workflow."""
+def process_request(input_data, api_caller=None, current_date=None):
+    """Run the complete workflow, retaining the legacy one-module contract."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
-    _progress(progress_callback, "validating", "Checking the module evidence.")
+    if isinstance(input_data, dict) and "modules" in input_data:
+        return _process_pacing_request(input_data, api_caller, current_date)
+
     errors = io_manager.validate_input(input_data)
     module = str(input_data.get("module", "")).strip().upper()
     if errors:
-        return _failure(module, errors)
+        return {"ok": False, "errors": errors}
 
     extraction = ai_manager.extract_assessments(
         {**input_data, "module": module},
         api_caller=api_caller,
-        progress_callback=progress_callback,
     )
-    if extraction["errors"] and not extraction["assessments"]:
-        return _failure(module, extraction["errors"])
-
-    _progress(progress_callback, "planning", "Building the weekly plan.")
-    plan = logic_manager.build_plan(module, extraction["assessments"])
-    _progress(progress_callback, "saving", "Saving the current module plan.")
+    plan = logic_manager.build_plan(
+        module,
+        extraction["assessments"],
+        extraction["comments"],
+    )
     if not data_manager.save_plan(plan):
-        return _failure(module, ["The assessment plan could not be saved."])
+        return {"ok": False, "errors": ["The schedule could not be saved."]}
 
     return {
         "ok": True,
-        "source_module": module,
-        "extracted_count": len(plan["assessments"]),
+        "extracted_count": len(extraction["assessments"]),
         "model_used": extraction.get("model_used"),
-        "errors": extraction["errors"],
         **plan,
     }
 
 
 def get_dashboard():
-    """Return the one currently stored module plan."""
+    """Return the current schedule and checklist."""
     load_dotenv(PROJECT_ROOT / ".env", override=False)
-    assessments = data_manager.load_assessments()
-    module = assessments[0]["module"] if assessments else None
-    plan = logic_manager.build_plan(module, assessments)
-    return {**plan, "records_loaded": len(assessments)}
+    return data_manager.load_plan()
 
 
-def _failure(module, errors):
-    """Return one small failure shape used by API and frontend."""
+# Multi-module orchestration internals
+
+
+def _process_pacing_request(input_data, api_caller, current_date):
+    normalized_input, errors = io_manager.process_input(input_data)
+    if errors:
+        return {"ok": False, "errors": errors}
+
+    trimester_context = logic_manager.get_trimester_context(current_date)
+    ai_result = ai_manager.process(
+        normalized_input,
+        trimester_context,
+        api_caller=api_caller,
+    )
+    validated_ai_result = ai_manager.validate_ai_output(
+        ai_result,
+        expected_modules=normalized_input["modules"],
+    )
+    pacing_result = logic_manager.build_timeline(
+        validated_ai_result,
+        trimester_context,
+    )
+    if not data_manager.save(
+        input_data=normalized_input,
+        ai_result=validated_ai_result,
+        pacing_result=pacing_result,
+    ):
+        return {"ok": False, "errors": ["The trimester pacing result could not be saved."]}
     return {
-        "ok": False,
-        "source_module": module,
-        "extracted_count": 0,
-        "errors": list(errors),
+        "ok": True,
+        "extracted_count": sum(
+            len(module["assessments"])
+            for module in validated_ai_result["modules"]
+        ),
+        "models_used": validated_ai_result.get("models_used", []),
+        **pacing_result,
     }
-
-
-def _progress(callback, stage, message):
-    """Report optional progress without owning job storage."""
-    if callback:
-        try:
-            callback({"stage": stage, "message": message})
-        except Exception:
-            logging.warning("Progress callback failed and was ignored")

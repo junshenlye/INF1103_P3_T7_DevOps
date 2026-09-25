@@ -1,43 +1,576 @@
-"""Convert extracted assessments into a single-module weekly plan."""
+"""Build deterministic trimester pacing calculations from extracted facts."""
+
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 
-def build_plan(module, assessments):
-    """Add deterministic status and priority, then build week columns."""
-    records = []
-    for assessment in assessments:
-        issues = list(assessment.get("issues", []))
-        ready = (
-            assessment.get("deadline") is not None
-            and assessment.get("weightage") is not None
-            and not issues
-        )
-        records.append(
+PRESSURE_THRESHOLDS = (
+    (15, "low"),
+    (35, "moderate"),
+    (65, "high"),
+    (float("inf"), "very_high"),
+)
+MAX_FINAL_FEEDBACK_ITEMS = 10
+TRIMESTER_WEEKS = (
+    (1, date(2026, 8, 31), date(2026, 9, 6), False),
+    (2, date(2026, 9, 7), date(2026, 9, 13), False),
+    (3, date(2026, 9, 14), date(2026, 9, 20), False),
+    (4, date(2026, 9, 21), date(2026, 9, 27), False),
+    (5, date(2026, 9, 28), date(2026, 10, 4), False),
+    (6, date(2026, 10, 5), date(2026, 10, 11), False),
+    (7, date(2026, 10, 12), date(2026, 10, 18), True),
+    (8, date(2026, 10, 19), date(2026, 10, 25), False),
+    (9, date(2026, 10, 26), date(2026, 11, 1), False),
+    (10, date(2026, 11, 2), date(2026, 11, 8), False),
+    (11, date(2026, 11, 9), date(2026, 11, 15), False),
+    (12, date(2026, 11, 16), date(2026, 11, 22), False),
+    (13, date(2026, 11, 23), date(2026, 11, 29), False),
+    (14, date(2026, 11, 30), date(2026, 12, 6), False),
+)
+
+
+# Public trimester API
+
+
+def get_trimester_context(current_date=None):
+    """Return the configured AY2026/27 Trimester 1 position."""
+    value = current_date or datetime.now(ZoneInfo("Asia/Singapore")).date()
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, str):
+        value = date.fromisoformat(value)
+    if not isinstance(value, date):
+        raise TypeError("current_date must be a date, datetime, ISO date, or None.")
+
+    current_week = None
+    is_recess = False
+    for week, start, end, recess in TRIMESTER_WEEKS:
+        if start <= value <= end:
+            current_week = week
+            is_recess = recess
+            break
+
+    status = "in_trimester"
+    if value < TRIMESTER_WEEKS[0][1]:
+        status = "before_trimester"
+    elif value > TRIMESTER_WEEKS[-1][2]:
+        status = "after_trimester"
+
+    return {
+        "academic_year": "2026/27",
+        "trimester": 1,
+        "current_date": value.isoformat(),
+        "current_week": current_week,
+        "total_weeks": len(TRIMESTER_WEEKS),
+        "is_recess": is_recess,
+        "status": status,
+        "weeks": [
             {
-                "module": module,
-                "assessment_type": assessment["assessment_type"],
-                "deadline": assessment.get("deadline"),
-                "weightage": assessment.get("weightage"),
-                "priority": (
-                    _priority(assessment["deadline"], assessment["weightage"])
-                    if ready
-                    else None
+                "week": week,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "is_recess": recess,
+                "label": (
+                    "Recess Week"
+                    if recess
+                    else "Final Assessment" if week == 14 else f"Week {week}"
                 ),
-                "status": "READY" if ready else "REVIEW",
-                "issues": issues,
+            }
+            for week, start, end, recess in TRIMESTER_WEEKS
+        ],
+    }
+
+
+def build_timeline(ai_result, trimester_context):
+    """Build ranking, weekly pressure, overlap, and cluster views.
+
+    Weekly pressure is intentionally transparent: every occurrence contributes
+    five density points plus its importance contribution / 10. Collective
+    recurring importance is divided across its occurrence weeks. Missing
+    importance still contributes density points, so incomplete items stay visible.
+    """
+    total_weeks = int(trimester_context.get("total_weeks") or 14)
+    current_week = trimester_context.get("current_week")
+    status = trimester_context.get("status", "in_trimester")
+    start_week = (
+        1
+        if status == "before_trimester"
+        else total_weeks + 1
+        if status == "after_trimester"
+        else int(current_week or 1)
+    )
+    week_metadata = {
+        item["week"]: item for item in trimester_context.get("weeks", [])
+    }
+    weekly_occurrences = {week: [] for week in range(1, total_weeks + 1)}
+    ranking = []
+    comments = list(ai_result.get("global_comments", []))
+    checklist = list(ai_result.get("user_checklist", []))
+    unplaced = []
+    past_assessments = []
+    module_weight_coverage = []
+    source_count = 0
+
+    for module in ai_result.get("modules", []):
+        module_name = str(module.get("module_name") or "Unknown module").strip()
+        credits = _valid_number(module.get("credit_units"), minimum=0, maximum=60)
+        comments.extend(
+            f"{module_name}: {item}" for item in module.get("comments", [])[:2]
+        )
+        if credits is None:
+            checklist.append(
+                f"{module_name}: Provide valid credit units so academic importance "
+                "can be calculated."
+            )
+
+        module_known_weight = 0.0
+        module_unknown_weights = 0
+        module_assessment_count = len(module.get("assessments", []))
+        for index, assessment in enumerate(module.get("assessments", []), start=1):
+            source_count += 1
+            name = str(assessment.get("name") or f"Assessment {index}").strip()
+            reference = f"{module_name} {name}"
+            weightage = _valid_number(
+                assessment.get("weightage_percent"), minimum=0, maximum=100
+            )
+            weightage_scope = (
+                "per_occurrence"
+                if assessment.get("weightage_scope") == "per_occurrence"
+                else "total"
+            )
+            recurring = bool(assessment.get("recurring"))
+            importance = (
+                round(weightage * credits, 4)
+                if weightage is not None and credits is not None
+                else None
+            )
+            weeks, week_warnings = _assessment_weeks(
+                assessment, total_weeks, week_metadata
+            )
+            comments.extend(f"{reference}: {warning}" for warning in week_warnings)
+            comments.extend(
+                f"{reference}: {item}"
+                for item in assessment.get("comments", [])[:1]
+            )
+            feedback = _assessment_feedback(assessment, weightage, weeks)
+            if feedback:
+                checklist.append(f"{reference}: {feedback}")
+            if not weeks:
+                unplaced.append(reference)
+
+            is_collective_recurring = recurring and weightage_scope == "total"
+            if weightage is None:
+                module_unknown_weights += 1
+            elif recurring and weightage_scope == "per_occurrence":
+                module_known_weight += weightage * max(len(weeks), 1)
+            else:
+                module_known_weight += weightage
+            ranking_week = _ranking_week(
+                weeks,
+                start_week,
+                collective_recurring=is_collective_recurring,
+            )
+            if ranking_week is None:
+                weeks_remaining = None
+                proximity = None
+            else:
+                weeks_remaining = ranking_week - start_week
+                # Past work has zero current proximity; current-week work has 1.
+                proximity = (
+                    0
+                    if weeks_remaining < 0
+                    else round(1 / max(weeks_remaining, 1), 4)
+                )
+            relative_score = (
+                round(importance * proximity, 4)
+                if importance is not None and proximity is not None
+                else None
+            )
+            ranking_item = {
+                "module_name": module_name,
+                "assessment_name": name,
+                "assessment_type": assessment.get("type") or "assessment",
+                "weightage_percent": weightage,
+                "weightage_scope": weightage_scope,
+                "credit_units": credits,
+                "academic_importance": importance,
+                "due_date": assessment.get("due_date"),
+                "due_week": assessment.get("due_week"),
+                "occurrence_weeks": weeks,
+                "timing_label": _timing_label(weeks, assessment.get("due_week")),
+                "weeks_remaining": weeks_remaining,
+                "proximity_score": proximity,
+                "relative_score": relative_score,
+                "confidence": assessment.get("confidence"),
+                "recurring": recurring,
+            }
+            ranking.append(ranking_item)
+
+            pressure_importance = importance
+            if is_collective_recurring and weeks and importance is not None:
+                # A collective 20% participation grade is 20% for the whole
+                # trimester. Spread its pressure contribution across occurrences;
+                # never count the full 20% in every week.
+                pressure_importance = round(importance / len(weeks), 4)
+            for week in weeks:
+                occurrence = {
+                    "module_name": module_name,
+                    "assessment_name": name,
+                    "assessment_type": assessment.get("type") or "assessment",
+                    "weightage_percent": weightage,
+                    "weightage_scope": weightage_scope,
+                    "academic_importance": importance,
+                    "pressure_importance": pressure_importance,
+                    "recurring": recurring,
+                }
+                weekly_occurrences[week].append(occurrence)
+                if week < start_week:
+                    past_assessments.append({"week": week, **occurrence})
+
+        rounded_module_weight = round(module_known_weight, 2)
+        coverage_complete = (
+            module_assessment_count > 0
+            and module_unknown_weights == 0
+            and 99.5 <= rounded_module_weight <= 100.5
+        )
+        if module_assessment_count and not coverage_complete:
+            if module_unknown_weights:
+                checklist.append(
+                    f"{module_name}: Assessment weights are incomplete "
+                    f"({rounded_module_weight:g}% known)."
+                )
+            else:
+                checklist.append(
+                    f"{module_name}: Assessment weights total "
+                    f"{rounded_module_weight:g}%, not 100%."
+                )
+        module_weight_coverage.append(
+            {
+                "module_name": module_name,
+                "known_weightage_percent": rounded_module_weight,
+                "unknown_weight_count": module_unknown_weights,
+                "assessment_count": module_assessment_count,
+                "complete": coverage_complete,
             }
         )
 
-    blocks = [
+    ranking.sort(
+        key=lambda item: (
+            item["relative_score"] is None,
+            -(item["relative_score"] or 0),
+            item["due_week"] is None,
+            item["due_week"] or total_weeks + 1,
+            item["module_name"],
+            item["assessment_name"],
+        )
+    )
+    for position, item in enumerate(
+        (item for item in ranking if item["relative_score"] is not None), start=1
+    ):
+        item["rank"] = position
+    for item in ranking:
+        item.setdefault("rank", None)
+
+    all_weeks = []
+    for week in range(1, total_weeks + 1):
+        assessments = weekly_occurrences[week]
+        importance_total = sum(
+            item["pressure_importance"] or 0 for item in assessments
+        )
+        score = round(len(assessments) * 5 + importance_total / 10, 2)
+        metadata = week_metadata.get(week, {})
+        all_weeks.append(
+            {
+                "week": week,
+                "label": metadata.get("label", f"Week {week}"),
+                "start_date": metadata.get("start_date"),
+                "end_date": metadata.get("end_date"),
+                "is_recess": bool(metadata.get("is_recess", False)),
+                "assessment_count": len(assessments),
+                "pressure_score": score,
+                "pressure": _pressure_label(score),
+                "assessments": assessments,
+            }
+        )
+
+    timeline = [item for item in all_weeks if item["week"] >= start_week]
+    overlaps = [
         {
-            "assessment_type": record["assessment_type"],
-            "deadline": record["deadline"],
-            "week_number": int(record["deadline"].split()[1]),
-            "priority": record["priority"],
-            "weightage": record["weightage"],
+            "week": item["week"],
+            "assessment_count": item["assessment_count"],
+            "assessments": [
+                f"{assessment['module_name']} {assessment['assessment_name']}"
+                for assessment in item["assessments"]
+            ],
+            "pressure": item["pressure"],
         }
-        for record in records
-        if record["status"] == "READY"
+        for item in timeline
+        if item["assessment_count"] >= 2
     ]
+    clusters = _build_clusters(timeline)
+    future_count = sum(item["assessment_count"] for item in timeline)
+    if source_count != len(ranking):
+        comments.append("One or more assessments disappeared during pacing calculations.")
+
+    peak = max(timeline, key=lambda item: item["pressure_score"], default=None)
+    result = {
+        "trimester_context": {
+            key: trimester_context.get(key)
+            for key in (
+                "academic_year",
+                "trimester",
+                "current_date",
+                "current_week",
+                "total_weeks",
+                "is_recess",
+                "status",
+            )
+        },
+        "current_week": current_week,
+        "relative_assessment_ranking": ranking,
+        "module_weight_coverage": module_weight_coverage,
+        "timeline": timeline,
+        "pressure_by_week": [
+            {
+                "week": item["week"],
+                "pressure_score": item["pressure_score"],
+                "pressure": item["pressure"],
+                "assessment_count": item["assessment_count"],
+            }
+            for item in timeline
+        ],
+        "overlaps": overlaps,
+        "clusters": clusters,
+        "overall_pacing": {
+            "assessment_count": source_count,
+            "future_occurrence_count": future_count,
+            "peak_week": peak["week"] if peak else None,
+            "peak_pressure": peak["pressure"] if peak else None,
+            "heavy_weeks": [
+                item["week"]
+                for item in timeline
+                if item["pressure"] in {"high", "very_high"}
+            ],
+            "light_weeks": [
+                item["week"]
+                for item in timeline
+                if item["pressure"] == "low"
+            ],
+        },
+        "past_assessments": past_assessments,
+        "unplaced_assessments": list(dict.fromkeys(unplaced)),
+        "comments": _limit_feedback(comments),
+        "user_checklist": _limit_feedback(checklist),
+    }
+    return result
+
+
+# Timeline calculation helpers
+
+
+def _assessment_weeks(assessment, total_weeks, week_metadata):
+    warnings = []
+    candidates = []
+    recurrence = assessment.get("recurrence")
+    if assessment.get("recurring") and isinstance(recurrence, dict):
+        candidates.extend(recurrence.get("weeks") or [])
+        if not candidates:
+            start = recurrence.get("start_week")
+            end = recurrence.get("end_week")
+            interval = recurrence.get("every_n_weeks") or 1
+            valid_range = (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and isinstance(interval, int)
+                and interval > 0
+            )
+            if valid_range:
+                candidates.extend(range(start, end + 1, interval))
+    if assessment.get("spans_multiple_weeks"):
+        start = assessment.get("start_week")
+        end = assessment.get("end_week")
+        if isinstance(start, int) and isinstance(end, int) and start <= end:
+            candidates.extend(range(start, end + 1))
+    if not candidates and assessment.get("due_week") is not None:
+        candidates.append(assessment.get("due_week"))
+    if not candidates and assessment.get("due_date"):
+        due_date = str(assessment["due_date"]).strip()
+        matching_week = next(
+            (
+                week
+                for week, metadata in week_metadata.items()
+                if metadata.get("start_date")
+                and metadata.get("end_date")
+                and metadata["start_date"] <= due_date <= metadata["end_date"]
+            ),
+            None,
+        )
+        if matching_week is not None:
+            candidates.append(matching_week)
+        else:
+            warnings.append(
+                f"Due date {due_date} could not be matched to a trimester week."
+            )
+
+    weeks = []
+    for value in candidates:
+        if isinstance(value, bool):
+            warnings.append(f"Invalid due week {value!r} was ignored.")
+            continue
+        try:
+            week = int(value)
+        except (TypeError, ValueError):
+            warnings.append(f"Invalid due week {value!r} was ignored.")
+            continue
+        if not 1 <= week <= total_weeks:
+            warnings.append(
+                f"Week {week} is outside this {total_weeks}-week trimester and "
+                "was not placed."
+            )
+            continue
+        weeks.append(week)
+    return sorted(set(weeks)), _unique(warnings)
+
+
+def _ranking_week(weeks, start_week, collective_recurring=False):
+    if not weeks:
+        return None
+    upcoming = [week for week in weeks if week >= start_week]
+    if not upcoming:
+        return max(weeks)
+    return max(upcoming) if collective_recurring else min(upcoming)
+
+
+def _timing_label(weeks, due_week):
+    if due_week is not None:
+        return f"Week {due_week}"
+    if not weeks:
+        return "Unknown"
+    if len(weeks) == 1:
+        return f"Week {weeks[0]}"
+    continuous = weeks == list(range(weeks[0], weeks[-1] + 1))
+    return (
+        f"Weeks {weeks[0]}–{weeks[-1]}"
+        if continuous
+        else "Weeks " + ", ".join(str(week) for week in weeks)
+    )
+
+
+def _assessment_feedback(assessment, weightage, weeks):
+    """Return one compact, material feedback item for an assessment."""
+    model_missing = assessment.get("missing_information", [])
+    if model_missing and (weightage is None or not weeks):
+        return "Assessment details are incomplete."
+    if weightage is None:
+        return "Assessment weightage is missing."
+    if not weeks:
+        return "Assessment timing is missing."
+    if model_missing:
+        return str(model_missing[0]).strip() or "Assessment details are incomplete."
+    return None
+
+
+def _limit_feedback(items, limit=MAX_FINAL_FEEDBACK_ITEMS):
+    unique = _unique(items)
+    if len(unique) <= limit:
+        return unique
+    omitted = len(unique) - limit
+    return unique[:limit] + [
+        f"{omitted} additional assessment detail(s) are incomplete."
+    ]
+
+
+def _pressure_label(score):
+    for upper_bound, label in PRESSURE_THRESHOLDS:
+        if score < upper_bound:
+            return label
+    return "very_high"
+
+
+def _build_clusters(timeline):
+    busy = [item for item in timeline if item["assessment_count"]]
+    groups = []
+    for week in busy:
+        if not groups or week["week"] > groups[-1][-1]["week"] + 1:
+            groups.append([week])
+        else:
+            groups[-1].append(week)
+
+    result = []
+    for group in groups:
+        names = _unique(
+            f"{assessment['module_name']} {assessment['assessment_name']}"
+            for week in group
+            for assessment in week["assessments"]
+        )
+        occurrence_count = sum(week["assessment_count"] for week in group)
+        if occurrence_count < 2:
+            continue
+        peak = max(group, key=lambda week: week["pressure_score"])
+        result.append(
+            {
+                "start_week": group[0]["week"],
+                "end_week": group[-1]["week"],
+                "weeks": [week["week"] for week in group],
+                "assessment_count": occurrence_count,
+                "assessments": names,
+                "peak_pressure": peak["pressure"],
+            }
+        )
+    return result
+
+
+def _valid_number(value, minimum, maximum):
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if minimum <= number <= maximum else None
+
+
+def _unique(items):
+    return list(dict.fromkeys(str(item).strip() for item in items if str(item).strip()))
+
+
+# Legacy one-module pacing API
+
+
+def build_plan(module, assessments, comments=None):
+    """Build schedulable blocks and one concise missing-information list."""
+    blocks = []
+    checklist = []
+
+    for assessment in assessments:
+        issues = list(assessment.get("issues", []))
+        if assessment.get("deadline") is None and not any(
+            "deadline" in issue.lower() for issue in issues
+        ):
+            issues.append("The deadline week is missing.")
+        if assessment.get("weightage") is None and not any(
+            "weight" in issue.lower() for issue in issues
+        ):
+            issues.append("The assessment weight is missing.")
+
+        if issues:
+            checklist.append(
+                {"title": assessment["assessment_type"], "items": issues}
+            )
+            continue
+
+        blocks.append(
+            {
+                "assessment_type": assessment["assessment_type"],
+                "deadline": assessment["deadline"],
+                "week_number": int(assessment["deadline"].split()[1]),
+                "weightage": assessment["weightage"],
+                "priority": _priority(
+                    assessment["deadline"], assessment["weightage"]
+                ),
+            }
+        )
+
     blocks.sort(
         key=lambda block: (
             block["week_number"],
@@ -54,23 +587,29 @@ def build_plan(module, assessments):
         }
         for week in range(1, final_week + 1)
     ]
-    checklist = [
-        {
-            "assessment_type": record["assessment_type"],
-            "items": record["issues"],
-        }
-        for record in records
-        if record["status"] == "REVIEW"
+    known_weights = [
+        assessment["weightage"]
+        for assessment in assessments
+        if assessment.get("weightage") is not None
     ]
+    total_weight = sum(known_weights)
+    if known_weights and not 99.5 <= total_weight <= 100.5:
+        checklist.append(
+            {
+                "title": "Module coverage",
+                "items": [
+                    f"Visible assessment weights total {total_weight:g}%, not 100%. "
+                    "Add the missing assessment information."
+                ],
+            }
+        )
+    if comments and not checklist:
+        checklist.append({"title": "Evidence summary", "items": list(comments)})
+
     return {
         "module": module,
-        "assessments": records,
         "checklist": checklist,
-        "schedule": {
-            "weeks": weeks,
-            "blocks": blocks,
-            "warnings": [],
-        },
+        "schedule": {"weeks": weeks, "blocks": blocks},
     }
 
 
