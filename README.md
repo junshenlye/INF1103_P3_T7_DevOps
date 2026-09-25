@@ -9,7 +9,7 @@ timetable. This MVP deliberately analyses one module at a time.
 ```text
 Input
   -> I/O Manager validates user data
-  -> AI Manager extracts structured events (Qwen3-VL, with a smaller fallback)
+  -> AI Manager extracts structured events (Qwen Plus, then Flash fallback)
   -> Logic Manager builds the timetable and missing-information checklist
   -> Data Manager saves the finished plan
 Output
@@ -24,7 +24,7 @@ application state at module level.
 ```text
 src/
   io_manager.py       request validation
-  ai_manager.py       Qwen3-VL extraction through the OpenAI-compatible API
+  ai_manager.py       Qwen extraction through Alibaba Model Studio
   logic_manager.py    deterministic status and timetable rules
   data_manager.py     PostgreSQL persistence
   main.py             passes results between managers
@@ -39,7 +39,7 @@ fallback, revision history, correction workflow, or multi-module selection.
 
 ## Run
 
-Copy `.env.example` to `.env` and provide `OPENROUTER_API_KEY`.
+Copy `.env.example` to `.env` and provide `DASHSCOPE_API_KEY`.
 
 Start the main program and temporary database:
 
@@ -66,16 +66,15 @@ Addresses:
 PostgreSQL uses Docker `tmpfs`. `docker compose down` clears the current data.
 Uploaded images exist only while one request is being processed.
 
-Model processing emits `INFO` logs for request attempts, image-byte ingestion,
-provider latency and token usage, response shape, normalized assessment counts,
-and fallback selection. Each extraction has a short correlation ID. Prompts,
-image contents, API keys, and raw model output are not logged.
+The AI manager logs the extraction workflow at `INFO` level, including model
+attempts, fallback routing, returned assessment counts, and completion. Failures
+are logged without exposing prompts, images, API keys, or raw model output.
 
 ## Current proof of concept
 
 1. Enter one module code.
 2. Drop all screenshots for that module into one request.
-3. Wait while Qwen3-VL extracts the facts or its smaller fallback takes over.
+3. Wait while Qwen Plus extracts the facts or Qwen Flash takes over.
 4. Receive the read-only Week 1…N timetable.
 5. Use the AI checklist to find evidence missing from unscheduled items.
 

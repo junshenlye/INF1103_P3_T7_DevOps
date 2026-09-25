@@ -6,35 +6,28 @@ import logging
 import os
 from pathlib import Path
 import re
-import time
-import uuid
 
 from openai import OpenAI, OpenAIError
 
 
 LOGGER = logging.getLogger(__name__)
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-PRIMARY_MODEL = "qwen/qwen3-vl-32b-instruct"
-BACKUP_MODEL = "qwen/qwen3-vl-8b-instruct"
+DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+PRIMARY_MODEL = "qwen3.7-plus"
+BACKUP_MODEL = "qwen3.7-flash"
 
 
 def extract_assessments(input_data, api_caller=None):
     """Return usable assessments plus comments about unclear evidence."""
-    extraction_id = uuid.uuid4().hex[:12]
     module = str(input_data.get("module", "")).strip().upper()
     image_paths = input_data.get("image_paths", [])
     LOGGER.info(
-        "ai_ingestion_started extraction_id=%s module=%s image_count=%d",
-        extraction_id,
+        "Starting AI assessment extraction for %s with %d image(s)",
         module,
         len(image_paths),
     )
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
     if api_caller is None and not api_key:
-        LOGGER.warning(
-            "ai_ingestion_skipped extraction_id=%s reason=missing_api_key",
-            extraction_id,
-        )
+        LOGGER.warning("AI assessment extraction skipped: API key is missing")
         return {
             "assessments": [],
             "comments": ["The AI service is not configured, so no schedule was created."],
@@ -44,17 +37,11 @@ def extract_assessments(input_data, api_caller=None):
     models = _model_route()
     best_result = None
     for attempt, model in enumerate(models, start=1):
-        attempt_started = time.monotonic()
-        response_mode = "json_schema" if attempt > 1 else "forced_tool"
         LOGGER.info(
-            "ai_model_request_started extraction_id=%s model=%s attempt=%d "
-            "max_attempts=%d image_count=%d response_mode=%s",
-            extraction_id,
+            "Requesting assessment extraction from %s (attempt %d of %d)",
             model,
             attempt,
             len(models),
-            len(image_paths),
-            response_mode,
         )
         try:
             prompt = _build_prompt(input_data)
@@ -75,29 +62,12 @@ def extract_assessments(input_data, api_caller=None):
                 model=model,
                 structured_output=attempt > 1,
             )
-            output_mode = _model_output_mode(reply)
+            result = _normalize_reply(_parse_reply(reply))
             LOGGER.info(
-                "ai_model_output_received extraction_id=%s model=%s attempt=%d "
-                "latency_ms=%d output_mode=%s",
-                extraction_id,
+                "%s returned %d assessment(s) and %d comment(s)",
                 model,
-                attempt,
-                _elapsed_ms(attempt_started),
-                output_mode,
-            )
-            parsed_reply = _parse_reply(reply)
-            raw_assessments = parsed_reply.get("assessments", [])
-            raw_assessment_count = (
-                len(raw_assessments) if isinstance(raw_assessments, list) else 0
-            )
-            result = _normalize_reply(parsed_reply)
-            _log_output_ingestion(
-                extraction_id=extraction_id,
-                model=model,
-                attempt=attempt,
-                output_mode=output_mode,
-                raw_assessment_count=raw_assessment_count,
-                result=result,
+                len(result["assessments"]),
+                len(result["comments"]),
             )
             if result["assessments"] or result["comments"]:
                 result["model_used"] = model
@@ -106,28 +76,30 @@ def extract_assessments(input_data, api_caller=None):
                 ):
                     best_result = result
                 if _has_complete_weight_set(result["assessments"]):
-                    _log_ingestion_complete(extraction_id, result, attempt)
+                    LOGGER.info("AI assessment extraction completed with %s", model)
                     return result
+                if attempt < len(models):
+                    LOGGER.info(
+                        "%s returned an incomplete weight set; trying the fallback model",
+                        model,
+                    )
         except (ConnectionError, OSError, TypeError, ValueError, KeyError) as error:
             LOGGER.warning(
-                "ai_model_attempt_failed extraction_id=%s model=%s attempt=%d "
-                "latency_ms=%d error_type=%s error=%s",
-                extraction_id,
+                "AI model %s failed on attempt %d: %s",
                 model,
                 attempt,
-                _elapsed_ms(attempt_started),
-                type(error).__name__,
                 _safe_error(error),
             )
+            if attempt < len(models):
+                LOGGER.info("Trying the fallback AI model")
 
     if best_result:
-        _log_ingestion_complete(extraction_id, best_result, len(models))
+        LOGGER.info(
+            "AI assessment extraction completed with the best partial result from %s",
+            best_result.get("model_used"),
+        )
         return best_result
-    LOGGER.error(
-        "ai_ingestion_failed extraction_id=%s attempted_models=%d",
-        extraction_id,
-        len(models),
-    )
+    LOGGER.error("AI assessment extraction failed for all configured models")
     return {
         "assessments": [],
         "comments": [
@@ -172,7 +144,7 @@ def _build_prompt(input_data):
 
 
 def _call_qwen(prompt, image_paths, api_key, model, structured_output=False):
-    """Call a Qwen model through OpenRouter's OpenAI-compatible API."""
+    """Call Qwen through Alibaba Model Studio's OpenAI-compatible API."""
     request = {
         "model": model,
         "messages": [
@@ -187,6 +159,7 @@ def _call_qwen(prompt, image_paths, api_key, model, structured_output=False):
         ],
         "temperature": 0,
         "max_tokens": 4000 if structured_output else 2000,
+        "extra_body": {"enable_thinking": False},
     }
     if structured_output:
         request["response_format"] = {
@@ -205,8 +178,8 @@ def _call_qwen(prompt, image_paths, api_key, model, structured_output=False):
         }
 
     base_url = (
-        os.getenv("OPENROUTER_BASE_URL", OPENROUTER_BASE_URL).strip()
-        or OPENROUTER_BASE_URL
+        os.getenv("DASHSCOPE_BASE_URL", DASHSCOPE_BASE_URL).strip()
+        or DASHSCOPE_BASE_URL
     )
     client = OpenAI(
         api_key=api_key,
@@ -214,34 +187,24 @@ def _call_qwen(prompt, image_paths, api_key, model, structured_output=False):
         timeout=90.0,
         max_retries=2,
     )
-    request_started = time.monotonic()
     try:
         completion = client.chat.completions.create(**request)
     except OpenAIError as error:
-        raise ConnectionError("The Qwen model request failed.") from error
+        status = getattr(error, "status_code", None)
+        details = str(error) or type(error).__name__
+        status_text = f" (HTTP {status})" if status else ""
+        raise ConnectionError(
+            f"Alibaba Model Studio request failed{status_text}: {details}"
+        ) from error
 
-    usage = completion.usage
-    first_choice = completion.choices[0] if completion.choices else None
-    LOGGER.info(
-        "ai_provider_response model=%s response_id=%s latency_ms=%d "
-        "finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
-        model,
-        completion.id,
-        _elapsed_ms(request_started),
-        getattr(first_choice, "finish_reason", None),
-        getattr(usage, "prompt_tokens", None),
-        getattr(usage, "completion_tokens", None),
-        getattr(usage, "total_tokens", None),
-    )
     if not completion.choices:
-        raise ValueError("OpenRouter returned no model message.")
+        raise ValueError("Alibaba Model Studio returned no model message.")
     return completion.choices[0].message.model_dump(exclude_none=True)
 
 
 def _user_content(prompt, image_paths):
     """Build one multimodal message."""
     content = [{"type": "text", "text": prompt}]
-    total_image_bytes = 0
     media_types = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
@@ -252,7 +215,6 @@ def _user_content(prompt, image_paths):
     for image_path in image_paths:
         path = Path(image_path)
         image_bytes = path.read_bytes()
-        total_image_bytes += len(image_bytes)
         encoded = base64.b64encode(image_bytes).decode("ascii")
         content.append(
             {
@@ -262,12 +224,6 @@ def _user_content(prompt, image_paths):
                 },
             }
         )
-    LOGGER.info(
-        "ai_input_ingested image_count=%d image_bytes=%d prompt_chars=%d",
-        len(image_paths),
-        total_image_bytes,
-        len(prompt),
-    )
     return content
 
 
@@ -477,71 +433,6 @@ def _result_score(result):
     return len(assessments), known_facts
 
 
-def _model_output_mode(reply):
-    """Describe the response shape without logging model-generated content."""
-    if not isinstance(reply, dict):
-        return type(reply).__name__
-    if "assessments" in reply:
-        return "direct_json"
-    if reply.get("tool_calls"):
-        return "tool_call"
-    if reply.get("content"):
-        return "message_content"
-    return "empty_message"
-
-
-def _log_output_ingestion(
-    extraction_id,
-    model,
-    attempt,
-    output_mode,
-    raw_assessment_count,
-    result,
-):
-    """Record normalized output quality without exposing extracted details."""
-    assessments = result["assessments"]
-    issue_count = sum(len(item["issues"]) for item in assessments)
-    known_deadlines = sum(item["deadline"] is not None for item in assessments)
-    known_weights = sum(item["weightage"] is not None for item in assessments)
-    LOGGER.info(
-        "ai_model_output_ingested extraction_id=%s model=%s attempt=%d "
-        "output_mode=%s raw_assessment_count=%d assessment_count=%d "
-        "discarded_count=%d comment_count=%d issue_count=%d "
-        "known_deadline_count=%d known_weight_count=%d complete_weight_set=%s",
-        extraction_id,
-        model,
-        attempt,
-        output_mode,
-        raw_assessment_count,
-        len(assessments),
-        max(raw_assessment_count - len(assessments), 0),
-        len(result["comments"]),
-        issue_count,
-        known_deadlines,
-        known_weights,
-        str(_has_complete_weight_set(assessments)).lower(),
-    )
-
-
-def _log_ingestion_complete(extraction_id, result, attempts):
-    """Record the selected route and final ingestion counts."""
-    LOGGER.info(
-        "ai_ingestion_completed extraction_id=%s selected_model=%s attempts=%d "
-        "assessment_count=%d comment_count=%d complete_weight_set=%s",
-        extraction_id,
-        result.get("model_used"),
-        attempts,
-        len(result["assessments"]),
-        len(result["comments"]),
-        str(_has_complete_weight_set(result["assessments"])).lower(),
-    )
-
-
-def _elapsed_ms(started_at):
-    """Return a monotonic elapsed time suitable for operational logs."""
-    return round((time.monotonic() - started_at) * 1000)
-
-
 def _issue_text(issues):
     """Reduce model issue objects or strings to user-facing comments."""
     if not isinstance(issues, list):
@@ -559,8 +450,8 @@ def _issue_text(issues):
 
 def _model_route():
     """Return one primary model followed by one distinct backup model."""
-    primary = os.getenv("OPENROUTER_MODEL", PRIMARY_MODEL).strip() or PRIMARY_MODEL
-    backup = os.getenv("OPENROUTER_BACKUP_MODEL", BACKUP_MODEL).strip() or BACKUP_MODEL
+    primary = os.getenv("QWEN_MODEL", PRIMARY_MODEL).strip() or PRIMARY_MODEL
+    backup = os.getenv("QWEN_BACKUP_MODEL", BACKUP_MODEL).strip() or BACKUP_MODEL
     return [primary] if primary == backup else [primary, backup]
 
 
