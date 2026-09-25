@@ -40,40 +40,43 @@ assessments contribute throughout their known range. Missing weightages, credit
 units, or weeks remain visible as comments/checklist items rather than causing
 the whole pipeline to fail.
 
-Each module is extracted in its own model request. Up to five module requests run
-in parallel by default (`AI_MAX_PARALLEL_MODULES`), keeping evidence contexts
-small and reducing multi-module latency. A recurring participation weight marked
-as `total` is spread across its occurrence weeks for pressure calculations; the
-full percentage is never counted once per week.
+Each module is extracted in its own asynchronous model request. Up to five API
+requests are in flight by default (`AI_MAX_CONCURRENT_REQUESTS`), keeping
+evidence contexts small and reducing multi-module latency without a worker-thread
+pool. The former `AI_MAX_PARALLEL_MODULES` setting remains a fallback alias. A
+recurring participation weight marked as `total` is spread across its occurrence
+weeks for pressure calculations; the full percentage is never counted once per
+week.
 
 ### Code map
 
-- `src/ai_manager.py`: active multi-module extraction flow. Functions follow the
-  call order: public API → per-module extraction → evidence preparation → model
-  contract → response normalization → small helpers.
-- `process`: fans modules out into independent parallel requests and restores
-  their original order.
+- `src/ai_manager.py`: the single AI boundary. It owns active and compatibility
+  prompts, model requests, schemas, parsing, and normalization so those rules do
+  not drift across several files.
+- `process`: is the synchronous Flask-compatible wrapper around `process_async`.
+  The async function gathers independent requests in their original order. Each
+  reply is normalized once before the final result is assembled.
 - `_extract_module`: runs one module request, handles fallback models, and keeps
   failures isolated to that module.
 - `_build_pacing_prompt`: reads only that module's non-image evidence, then asks
-  the prompt module to construct the request.
-- `_call_pacing_model`: performs the structured Qwen request with model thinking
-  disabled and a bounded output size.
-- `_pacing_schema`: defines the JSON contract, including recurring weight scope.
+  the local prompt formatter to construct the request.
+- `_call_model`: is the one asynchronous OpenAI-compatible transport used by
+  both request contracts; small wrappers supply the appropriate prompt and
+  schema.
+- `_pacing_schema` and `_legacy_schema`: define their strict JSON contracts from
+  shared schema builders, including recurring weight scope.
 - `_normalize_module_result`: validates model field types, numeric bounds, and
   recurrence structure without module- or test-case-specific lookup tables.
-- `validate_ai_output`: verifies module references and preserves a compact set of
-  material warnings before deterministic logic runs.
-- `src/system_prompts.py`: contains all model instructions and user-prompt
-  builders. Editing prompt policy no longer requires navigating transport code.
-- `src/ai_support.py`: contains shared multimodal-message, JSON, model-route, and
-  safe-error helpers.
-- `src/legacy_extraction.py`: isolates the former one-module AI schema and flow.
+- `validate_ai_output`: remains an external/raw-result compatibility boundary.
+  The live `process` path uses `_assemble_result` and does not normalize its
+  already-normalized modules again.
+- `extract_assessments`: retains the former one-module API in the same manager
+  and reuses the common transport, parser, scoring, and numeric normalization.
 - `src/logic_manager.py`: owns the trimester calendar data and every
   deterministic calculation.
 
-`ai_manager.extract_assessments` remains as a small compatibility proxy, so the
-former one-module API and tests still work without cluttering the active flow.
+The former one-module API and tests still work, but there is no longer a proxy
+or a second AI implementation to keep in sync.
 
 The calendar has one source of truth in `src/logic_manager.py`. The current
 configuration is SIT AY2026/27 Trimester 1 (31 August–6 December 2026), including
